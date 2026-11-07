@@ -96,7 +96,7 @@ Each set is a *circuit*: some non-zero combination of changes to exactly those i
 
 ## Circuits broken by unintended scene leakage into the P4 detector
 
-Found by rendering (Sprint 1c): the detector also receives the scene tone, attenuated by its filter, so it weakly observes `X+H/R+G-M` (and `-S` when source-referenced). These circuits remain indistinguishable to the current monitors (the leakage is far below their detection floor after block averaging), but NOT information-theoretically: an estimator that exploited the leakage could separate them.
+Found by rendering (Sprint 1c): the detector also receives the scene tone, attenuated by its filter, so it weakly observes `X+H/R+G-M` (and `-S` when source-referenced). Three levels must not be conflated: (1) **structural identifiability**: these circuits are not structurally indistinguishable once leakage is modelled; (2) **detectability under finite noise and bandwidth**: not established, the leakage is far below the monitors' floors after block averaging; (3) **estimator performance**: no estimator exploits it. Leakage therefore earns NO attribution credit: the guard's candidate sets use the structural graph without these channels. A future estimator must first demonstrate it under a stated, independently validated channel model.
 
 - **C3_analog_P4**: `{X,A}`, `{J,M}`, `{S,M}`, `{FG,M}`, `{X,G,M}`, `{J,G,A}`, `{S,G,A}`, `{G,A,FG}`, `{H,R,K,A}`, `{H,R,K,G,M}`
 - **C3s_analog_P4_srcref**: `{X,A}`, `{J,M}`, `{FG,M}`, `{X,G,M}`, `{J,G,A}`, `{G,A,FG}`, `{H,R,K,A}`, `{H,R,K,G,M}`

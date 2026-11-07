@@ -82,8 +82,17 @@ ones. Each is a regression test.
 8. **Scene leakage gives the P4 detector an unintended channel** (Sprint 1c).
    The detector weakly observes `X+H/R+G−M` (and `−S` when
    source-referenced). This breaks 10 of the 27 C6 and 9 of the 28 C6s
-   circuits *information-theoretically*. The current monitors still can't
-   separate those pairs. See `MONITORS.md`.
+   circuits *structurally*. That establishes neither detectability under
+   finite noise nor a usable estimator, so leakage earns no attribution
+   credit. See `MONITORS.md`.
+9. **Step monitors do not bound drift** (Sprint 1e). Frequency tracking
+   absorbs slow receiver ramps by construction. In the blind study,
+   P(CONDITIONAL | gradual U change) ≈ 0.98 for the pilot guard, against 0/16
+   for abrupt changes of 0.4 rad or more.
+10. **Non-detection is not zero change** (Sprint 1d). A still sensor may
+    exclude a cause only if it was sensitive enough to have seen that cause's
+    predicted change. Without this rule, 11% of detected windows excluded the
+    true cause.
 
 What the model leaves out: noise, amplitude, time multiplexing of scene and
 reference, sampling, detector bandwidth, non-linearity. Those belong to the
@@ -120,6 +129,8 @@ qualification-record verifier exists.
 | R14 | Pilot extractor ignores selector settling | Valid only if selector transients don't couple into the pilot path (pilot injected downstream at P3) | Bench check of the selector → pilot coupling. Synthetic cross-fade leakage is about 0.013 rad max, 20× below the floor |
 | R15 | Scene transients splatter into the pilot band | A scene step 20 dB above the pilot distorts the pilot estimate of that block | Quantified in `sim/leakage.py`. Consider pilot level, block length and window choice in Sprint 1e |
 | R16 | Unintended leakage channels | The detector's scene leakage breaks some structural circuits | Any estimator that uses it must declare it. `leakage_breaks()` lists the affected circuits |
+| R17 | Slow drift invisible to step monitors | CONDITIONAL during gradual receiver drift | Proposed Sprint 1f. Until then, a CONDITIONAL from continuous monitors bounds steps, not drift |
+| R18 | False-alarm evidence limited by exposure | Zero false alarms in about 0.03 min bounds the rate only at about 110/min | Longer synthetic captures now. Long bench runs later |
 
 ## 5. Preliminary sprint breakdown
 
@@ -131,6 +142,9 @@ qualification-record verifier exists.
 | **1b (done)** | Sampled pilot extractor: raw IQ → `PilotObservation` with frequency compensation, latency, unwrap continuity and gap handling ([`MONITORS.md`](MONITORS.md)) | Every row of the 1b–1c acceptance table has a test | No |
 | **1c (done)** | Analog quadrature model: bandwidth, two-section response, detector noise, saturation, logger dead time, tap at P4, own drift M, independent vs source reference (rendered as C6/C6s) | Misses A-side events, attenuates sub-µs glitches, preserves M ambiguity | No |
 | 1c (open) | Front-end anti-alias model (R11) | Revisit the intersample-glitch results | No |
+| **1d (done)** | Causal readiness-aware monitors; reference-bracket baseline; online guard combining bracket, pilot, analog and witness across timebases; attribution integrity ([`GUARD_AND_SCORER.md`](GUARD_AND_SCORER.md)) | No future evidence, no CONDITIONAL before requalification, consistent sets always hold the true cause, no unique attribution | No |
+| **1e (done)** | Freeze-before-reveal blind scorer; predeclared matching; clustered CIs; Poisson FA bounds; matched-pair controls; resource accounting; 102-capture study ([`SPRINT1E_STUDY.md`](SPRINT1E_STUDY.md)) | Reproducible, statistically defensible evaluation (no detection advantage predetermined) | No |
+| 1f (proposed) | Drift monitoring (finding 9): bound slow U drift, e.g. by comparing pilot frequency to a qualified reference, or by bracket-anchored drift estimation; longer captures for FA bounds | P(CONDITIONAL \| gradual) reduced, with an exposure-based FA bound | No |
 | 1d | P0.7 attribution guard + window policy on `OnlineCapture` + records → public state | Matched-observable negative controls give the same online state | No |
 | 1e | Offline scorer: detection vs. attribution, false alarms per exposure minute, latency, missed events, trial-cluster bootstrap CIs | Uses `open_for_scoring()` only after decisions are frozen | No |
 | 2 | P1.1–P1.4 instrumentation, conducted wiring review, blind controller, cost audit. B220mini adapter writing this contract | Gate 0 evidence package | **Yes**, plus procurement signoff |

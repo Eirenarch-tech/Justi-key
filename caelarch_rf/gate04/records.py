@@ -15,7 +15,10 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-MONITOR_KINDS = ("sampled_digital", "analog_quadrature")
+MONITOR_KINDS = ("sampled_digital", "analog_quadrature", "reference_bracket")
+# Readiness of the monitor when the record was produced. Only TRACKING records
+# were produced at the monitor's stated (causal) sensitivity.
+MONITOR_STATES = ("UNMONITORED", "ACQUIRING", "WARMING", "REACQUIRING", "TRACKING")
 
 
 def _finite(name, v, allow_none=False):
@@ -48,10 +51,19 @@ class PilotObservation:
     continuity_id: Optional[int] = None
     freq_offset_hz: Optional[float] = None   # tracked residual pilot frequency
     innovation_rad: Optional[float] = None   # phase minus causal prediction
+    monitor_state: str = "TRACKING"
+    # k x sigma known AT available_ns (causal); None unless TRACKING. Online
+    # decisions must use this, never a capture-wide retrospective envelope.
+    detection_floor_rad: Optional[float] = None
+    reason: Optional[str] = None             # why the block is unusable / not ready
 
     def __post_init__(self):
         if self.monitor_kind not in MONITOR_KINDS:
             raise ValueError(f"monitor_kind must be one of {MONITOR_KINDS}")
+        if self.monitor_state not in MONITOR_STATES:
+            raise ValueError(f"monitor_state must be one of {MONITOR_STATES}")
+        if self.detection_floor_rad is not None and self.monitor_state != "TRACKING":
+            raise ValueError("a detection floor is stated only while TRACKING")
         for n in ("window_start_ns", "window_end_ns", "available_ns"):
             if not isinstance(getattr(self, n), int) or isinstance(getattr(self, n), bool):
                 raise ValueError(f"{n} must be integer ns")
@@ -59,7 +71,8 @@ class PilotObservation:
             raise ValueError("require window_start <= window_end <= available (no acausal estimates)")
         _finite("offset_hz", self.offset_hz)
         for n in ("phase_rad", "unwrapped_phase_rad", "phase_std_rad", "snr_db",
-                  "detector_bandwidth_hz", "freq_offset_hz", "innovation_rad"):
+                  "detector_bandwidth_hz", "freq_offset_hz", "innovation_rad",
+                  "detection_floor_rad"):
             _finite(n, getattr(self, n), allow_none=True)
         if self.phase_rad is not None and abs(self.phase_rad) > math.pi + 1e-12:
             raise ValueError("phase_rad must be wrapped to [-pi, pi]")

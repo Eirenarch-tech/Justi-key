@@ -1,5 +1,13 @@
 # Sprints 1b–1c: sampled-pilot extractor and analog-monitor model
 
+> **Updated in Sprint 1d.** Monitors now report explicit readiness
+> (`ACQUIRING`/`WARMING`/`REACQUIRING`/`TRACKING`/`UNMONITORED`) and requalify
+> from scratch after any disruptive gap. Each TRACKING record carries its
+> causal `detection_floor_rad`. `window_state` takes an explicit decision time
+> and uses only evidence available by then. A periodic **reference-bracket**
+> baseline (`extract_reference_bracket`) was added. The guard and scorer are
+> described in [`GUARD_AND_SCORER.md`](GUARD_AND_SCORER.md).
+
 **Status:** implemented and tested on synthetic captures only. No detection
 threshold here is a performance claim. Each capture reports its own envelope,
 and thresholds belong to the Sprint 1e scorer under a declared noise and
@@ -115,7 +123,11 @@ mechanism.
 ## Finding: scene leakage gives the P4 detector an unintended channel
 
 Leakage carries `X + H/R + G − M` (and `−S` for C6s) into the detector
-stream. As a result, 10 of the 27 C6 circuits and 9 of the 28 C6s circuits are
+stream. Keep three levels apart: **structural identifiability** (broken for
+these circuits once leakage is modelled), **detectability under finite noise
+and bandwidth** (not established: the leakage is far below the floors after
+block averaging), and **estimator performance** (no estimator uses it).
+Leakage earns no attribution credit. As a result, 10 of the 27 C6 circuits and 9 of the 28 C6s circuits are
 **not** information-theoretically indistinguishable. The raw `mon0` streams
 differ, and with the scene removed they match again. The current monitors
 can't exploit the difference (excursions identical, phases within 0.05 rad).

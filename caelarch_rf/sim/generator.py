@@ -645,6 +645,12 @@ class Simulation:
             "tones_hz": {"scene_rf": SCENE_RF_HZ, "pilot_rf": PILOT_RF_HZ, "center0": CENTER0_HZ},
             "switches": p["switches"],
             "acquisition_faults": self.fx.notes,
+            "jump": ({"orig_index": self.clock.jump_index, "jump_ns": self.clock.jump_ns,
+                      "phys_ns": self.clock.tp(self.clock.jump_index)}
+                     if self.clock.jump_index is not None else None),
+            "monitor_clock": ({"t0_dev_ns": p["mon"]["t0_dev"],
+                               "phys_to_device": "dev = t0_dev + t_phys/(1+eps)"}
+                              if self.analog else None),
         }
 
 
@@ -729,6 +735,7 @@ def generate(scenario: Scenario, seed, capture_dir, truth_path) -> dict:
             "t0_ns": p["t0_dev"], "clip_level": CLIP_LEVEL,
             "carries": ["scene", "reference"] + (["pilot"] if pilot else []),
             "pilot": {"offset_hz": PILOT_RF_HZ - CENTER0_HZ, "waveform_id": "cw"} if pilot else None,
+            "reference_tone": {"offset_hz": SCENE_RF_HZ - CENTER0_HZ},
         }] + streams_extra,
         "events_file": "events.jsonl", "events_sha256": sha["events.jsonl"],
         "witness_file": "witness.jsonl" if witness else None,

@@ -174,7 +174,7 @@ class TestRecords(unittest.TestCase):
 
 class TestIsolation(unittest.TestCase):
     ONLINE = ("contract.py", "ingest.py", "records.py", "states.py", "observability.py", "validate.py",
-              "monitors.py")
+              "monitors.py", "guard.py", "evaluate.py")
 
     def test_online_modules_never_import_sealed_truth(self):
         for name in self.ONLINE:

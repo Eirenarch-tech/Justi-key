@@ -73,7 +73,77 @@ class TestReceiverStep(Base):
         self.assertEqual(r.excursions, [])
         for o in r.observations:
             self.assertEqual(o.available_ns, o.window_end_ns + p.latency_ns)
-        self.assertEqual(window_state(r, r.coverage[0].start_ns, r.coverage[-1].end_ns)[0], PS.CONDITIONAL)
+        # Skip the acquisition/warm-up head: only TRACKING coverage can be CONDITIONAL.
+        mon = [c for c in r.coverage if c.status == "MONITORED"]
+        self.assertEqual(window_state(r, mon[0].start_ns, mon[-1].end_ns, mon[-1].end_ns + 10 ** 7)[0],
+                         PS.CONDITIONAL)
+
+
+class TestCausalDecisions(Base):
+    """Review P1: evidence counts only once available; readiness is explicit."""
+
+    def test_excursion_not_used_before_it_is_available(self):
+        r = extract_sampled_pilot(self.cap(self.sc(Disturbance("G", "step", T_STEP, 0.5))))
+        e = r.excursions[0]
+        start = e.window_start_ns - 1_000_000
+        early = window_state(r, start, e.window_end_ns, e.window_end_ns)       # measured, not yet available
+        late = window_state(r, start, e.window_end_ns, e.available_ns)
+        self.assertEqual(early[0], PS.UNRESOLVED)
+        self.assertNotIn("excursion", early[1])
+        self.assertIn("not fully covered", early[1])
+        self.assertEqual(late[0], PS.UNRESOLVED)
+        self.assertIn("excursion", late[1])
+        self.assertEqual(window_state(r, start, e.window_end_ns, e.window_end_ns - 1)[0], PS.UNRESOLVED)
+
+    def test_retune_forces_requalification_before_conditional(self):
+        cap = self.cap(self.sc(faults=[AcqFault("retune", at_ns=6_000_000)]))
+        r = extract_sampled_pilot(cap)
+        gap = [o for o in r.observations if o.reason == "SETTLING_RETUNE"]
+        after = [o for o in r.observations if o.window_start_ns > gap[-1].window_end_ns]
+        self.assertEqual(after[0].monitor_state, "ACQUIRING")
+        self.assertEqual(after[0].freq_offset_hz, 0.0)            # learned frequency discarded
+        first_tracking = next(i for i, o in enumerate(after) if o.monitor_state == "TRACKING")
+        need = MonitorParams().acquisition_innovations + MonitorParams().warmup_innovations
+        self.assertGreaterEqual(first_tracking, need)
+        # Samples have resumed, but the monitor is not yet at stated sensitivity.
+        w0, w1 = after[1].window_start_ns, after[first_tracking - 1].window_end_ns
+        st, why = window_state(r, w0, w1, w1 + 10 ** 7)
+        self.assertEqual(st, PS.UNRESOLVED)
+        self.assertIn("not at stated sensitivity", why)
+        for o in r.observations:
+            self.assertEqual(o.detection_floor_rad is not None, o.monitor_state == "TRACKING")
+
+    def test_benign_known_overflow_costs_one_block_not_a_requalification(self):
+        r = extract_sampled_pilot(self.cap(self.sc(faults=[AcqFault("overflow_known", at_ns=6_000_000)])))
+        gap = max(i for i, o in enumerate(r.observations) if o.reason == "OVERFLOW_BOUNDARY")
+        self.assertEqual(r.observations[gap + 1].monitor_state, "REACQUIRING")
+        self.assertEqual(r.observations[gap + 2].monitor_state, "TRACKING")
+
+    def test_online_floor_is_causal_not_the_retrospective_envelope(self):
+        r = extract_sampled_pilot(self.cap(self.sc()))
+        floors = [o.detection_floor_rad for o in r.observations if o.detection_floor_rad]
+        self.assertTrue(r.envelope["retrospective"])
+        self.assertGreater(len(set(round(f, 6) for f in floors)), 10)   # evolves with time
+        self.assertEqual(floors[-1], r.envelope["detection_floor_rad"])  # summary = LAST causal value
+
+
+class TestReferenceBracketBaseline(Base):
+    def test_sees_endpoint_changes_but_not_returning_pulses(self):
+        from caelarch_rf.gate04.monitors import extract_reference_bracket
+        base = self.sc(config=C6)
+        r = extract_reference_bracket(self.cap(replace(base, disturbances=(
+            Disturbance("R", "step", T_STEP, 0.6),))))
+        self.assertTrue(r.excursions)
+        sim = simulate(base, SEED)
+        dwells = [(s["t"], n["t"]) for s, n in zip(sim.plan["switches"], sim.plan["switches"][1:])
+                  if s["port"] == "R"]
+        gap_mid = (dwells[0][1] + dwells[1][0]) // 2       # between the first two R dwells
+        p = extract_reference_bracket(self.cap(replace(base, disturbances=(
+            Disturbance("G", "pulse", gap_mid, 1.0, 200_000),))))
+        self.assertEqual(p.excursions, [])
+        st, why = window_state(p, p.coverage[0].start_ns, p.coverage[0].end_ns, p.coverage[0].end_ns + 10 ** 7)
+        self.assertEqual(st, PS.UNRESOLVED)
+        self.assertIn("bracket-only", why)
 
 
 class TestFalseAlarms(Base):
@@ -99,7 +169,8 @@ class TestNoFalseReceiverAttribution(Base):
                 for e in r.excursions:
                     self.assertEqual(e.attribution, "UNATTRIBUTED")
                     self.assertEqual(set(e.candidates), SENSORS["pilot_sampled"].terms)
-                st, why = window_state(r, r.coverage[0].start_ns, r.coverage[-1].end_ns)
+                st, why = window_state(r, r.coverage[0].start_ns, r.coverage[-1].end_ns,
+                                       r.coverage[-1].end_ns + 10 ** 7)
                 self.assertEqual(st, PS.UNRESOLVED)
                 self.assertIn("unattributed", why)
 
@@ -158,7 +229,8 @@ class TestUnknownSampleLoss(Base):
         self.assertEqual((tail.status, tail.reason, tail.end_ns), ("UNMONITORED", "UNTIMED", None))
         sv = cap.streams["rx0"]
         self.assertTrue(all(o.window_end_ns <= tail.start_ns for o in r.observations))
-        self.assertEqual(window_state(r, tail.start_ns - 1_000_000, tail.start_ns + 1_000_000)[0], PS.INVALID)
+        self.assertEqual(window_state(r, tail.start_ns - 1_000_000, tail.start_ns + 1_000_000,
+                                      tail.start_ns + 10 ** 7)[0], PS.INVALID)
         self.assertLess(len(r.observations) * 100, sv.n + 1)
 
 
@@ -172,7 +244,8 @@ class TestPilotInterruption(Base):
         after = [o.continuity_id for o in r.observations if o.usable and o.window_start_ns > off[0].end_ns]
         self.assertTrue(before and after)
         self.assertGreater(min(after), max(before))
-        self.assertEqual(window_state(r, off[0].start_ns, off[0].end_ns)[0], PS.INVALID)
+        self.assertEqual(window_state(r, off[0].start_ns, off[0].end_ns, off[0].end_ns + 10 ** 7)[0],
+                         PS.INVALID)
 
 
 class TestPhaseWrapping(Base):

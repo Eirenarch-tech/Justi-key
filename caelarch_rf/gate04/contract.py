@@ -96,7 +96,11 @@ STREAM_FIELDS = {
     "format": tuple(FORMATS), "sample_count": "pos_int", "sample_rate_hz": "pos",
     "center_freq_hz": "pos", "rx_gain_db": "num", "timebase": "id", "t0_ns": "int",
     "clip_level": "pos", "carries": "carries", "pilot": "pilot?", "monitor": "monitor?",
+    "reference_tone": "reftone?",
 }
+# Known RF source tone (operating metadata), offset from the initial
+# center_freq_hz. Lets an online method measure the switched reference.
+REFTONE_FIELDS = {"offset_hz": "num"}
 # Analog quadrature detector output logged as its own stream (Sprint 1c).
 MONITOR_FIELDS = {"kind": ("analog_quadrature",), "reference": ("independent", "pilot_source"),
                   "detector_bandwidth_hz": "pos", "tap_plane": ("P4",)}
@@ -183,6 +187,8 @@ def _check_value(path, spec, v):
         _check_obj(path, PILOT_FIELDS, v)
     elif kind == "monitor":
         _check_obj(path, MONITOR_FIELDS, v)
+    elif kind == "reftone":
+        _check_obj(path, REFTONE_FIELDS, v)
     elif kind == "qualref":
         _check_obj(path, QUALREF_FIELDS, v)
     elif kind == "commitment":
@@ -263,6 +269,11 @@ def validate_manifest(m):
             _fail(p, "a stream carries analog_monitor iff it declares the monitor block")
         if "analog_monitor" in s["carries"] and len(s["carries"]) != 1:
             _fail(p, "an analog monitor stream carries nothing else")
+        if s.get("reference_tone") is not None:
+            if not set(s["carries"]) & {"scene", "reference"}:
+                _fail(p, "reference_tone needs a stream carrying scene/reference")
+            if abs(s["reference_tone"]["offset_hz"]) >= s["sample_rate_hz"] / 2:
+                _fail(p, "reference tone outside the stream's Nyquist band")
         if s.get("pilot") is not None and abs(s["pilot"]["offset_hz"]) >= s["sample_rate_hz"] / 2:
             _fail(p, "pilot offset outside the stream's Nyquist band")
         if s["format"] == "sc16_le" and not s["clip_level"] <= 32767:

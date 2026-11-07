@@ -12,8 +12,9 @@ technical confirmations are pending. Sprint 0 defines how captures are
 recorded and what an online method may see. Sprint 1a adds a blind
 disturbance generator that produces adversarial, contract-conformant
 captures. Sprints 1b–1c add a causal sampled-pilot extractor and an analog
-quadrature-monitor model, which detect but never attribute. No SDR has been
-chosen. The attribution guard and blind scorer are Sprints 1d–1e.
+quadrature-monitor model, which detect but never attribute. Sprints 1d–1e add
+a causal online guard and a freeze-before-reveal blind scorer, with a
+102-capture study. No SDR has been chosen.
 
 | Path | Backlog | What it is |
 |---|---|---|
@@ -32,12 +33,17 @@ chosen. The attribution guard and blind scorer are Sprints 1d–1e.
 | `docs/MONITORS.md` | 1b–1c | Extractor pipeline, analog model, acceptance mapping, envelope, leakage, findings |
 | `gate04/monitors.py` | 1b–1c | **Online.** Sampled-pilot and analog-monitor tracking, coverage, unattributed excursions, window state |
 | `sim/leakage.py` | 1b | Pilot ↔ scene interference by counterfactual renders |
+| `docs/GUARD_AND_SCORER.md` | 1d–1e | Guard policy, attribution integrity, freeze protocol, matching policy, statistics |
+| `docs/SPRINT1E_STUDY.md` | 1e | Blind study results and interpretation (synthetic) |
+| `gate04/guard.py`, `gate04/evaluate.py` | 1d | **Online.** Causal multi-monitor guard; freezing of online outputs |
+| `sim/scorer.py`, `sim/study.py` | 1e | **Offline.** Blind scorer, clustered CIs, Poisson FA bounds; study orchestration (CLI) |
 
 Stdlib only (enforced by a test), so the validator runs on a bench host and
 the generator's random streams don't depend on a numpy version.
 
 ```bash
-python3 -m unittest discover -s caelarch_rf/tests -t .      # 109 tests, ~35 s
+python3 -m unittest discover -s caelarch_rf/tests -t .      # 127 tests, ~40 s
+python3 -m caelarch_rf.sim.study --out OUT --n 102         # blind study, ~40 s
 python3 -m caelarch_rf.sim.batch --captures OUT/caps --truth OUT/truth --n 40
 python3 -m caelarch_rf.gate04.validate <capture_dir>        # contract check
 python3 -m caelarch_rf.gate04.observability                 # regenerate matrix doc
