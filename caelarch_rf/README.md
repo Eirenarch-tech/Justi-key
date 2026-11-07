@@ -1,0 +1,41 @@
+# Caelarch RF: Gate 0.4 architecture and measurement interface
+
+**Eirenarch Technologies, CAE-RF-004.4 research. Simulation and software
+only. Hardware Gate 0 HOLD.**
+
+> This directory is **unrelated to JustiKey** and shares no code with it. It
+> sits here only because no dedicated Caelarch repository was available. Move
+> it out with `git subtree split --prefix=caelarch_rf` once one exists.
+
+This change starts Gate 0.4 work that doesn't depend on hardware while
+CelonixLab's technical confirmations are pending. It defines how captures are
+recorded and what an online method may see. It does not choose an SDR, and it
+does not implement a pilot extractor, analog monitor, disturbance generator or
+scorer (those are Sprint 1).
+
+| Path | Backlog | What it is |
+|---|---|---|
+| `docs/GATE0_4_ARCHITECTURE.md` | P0.2 | Planes P0–P4/PS/ADC, structural findings, **risk register**, sprint plan |
+| `docs/OBSERVABILITY_MATRIX.md` | P0.2 | Generated sensor × impairment and configuration × impairment tables |
+| `docs/MEASUREMENT_CONTRACT.md` | P0.3 | Raw-IQ capture contract: timing, events, witness, sealed truth |
+| `gate04/contract.py`, `gate04/ingest.py` | P0.3 | Allowlist validator. Loader that derives accepted samples and fails closed |
+| `gate04/sealed_truth.py` | P0.3 | **Offline only.** Salted truth commitment and verification |
+| `gate04/records.py` | P0.5/P0.6 interface | `PilotObservation` with a causality (`available_ns`) rule |
+| `gate04/states.py` | P0.8 | Four public states, conservative Gate 0.3 adapter. VALID_BOUNDED unreachable |
+| `gate04/observability.py` | P0.2 | Exact rank and circuit analysis of the observation graph |
+
+Stdlib only (enforced by a test), so the validator runs on a bench host.
+
+```bash
+python3 -m unittest discover -s caelarch_rf/tests -t .      # 52 tests
+python3 -m caelarch_rf.gate04.validate <capture_dir>        # contract check
+python3 -m caelarch_rf.gate04.observability                 # regenerate matrix doc
+```
+
+## What this does not establish
+
+Passing these tests says that synthetic captures are parsed, guarded and
+mapped as specified. It is **not** evidence of phase transfer, monitor
+coverage, attribution performance, novelty or published-method superiority.
+Every hard stop in the handoff (`TEAM_BRIEF.md`, `TEAM_BACKLOG_AND_GATES.md`)
+still applies.
