@@ -11,8 +11,9 @@ Gate 0.4 work that doesn't depend on hardware, done while CelonixLab's
 technical confirmations are pending. Sprint 0 defines how captures are
 recorded and what an online method may see. Sprint 1a adds a blind
 disturbance generator that produces adversarial, contract-conformant
-captures. No SDR has been chosen. The pilot extractor, analog monitor model,
-attribution guard and scorer are Sprints 1b–1e.
+captures. Sprints 1b–1c add a causal sampled-pilot extractor and an analog
+quadrature-monitor model, which detect but never attribute. No SDR has been
+chosen. The attribution guard and blind scorer are Sprints 1d–1e.
 
 | Path | Backlog | What it is |
 |---|---|---|
@@ -25,15 +26,18 @@ attribution guard and scorer are Sprints 1b–1e.
 | `gate04/states.py` | P0.8 | Four public states, conservative Gate 0.3 adapter. VALID_BOUNDED unreachable |
 | `gate04/observability.py` | P0.2 | Exact rank and circuit analysis, minimal qualification-requirement sets (QR-*) |
 | `docs/BLIND_GENERATOR.md` | 1a | Generator model, faults, matched pairs, blindness rules, limitations |
-| `sim/generator.py`, `sim/disturbances.py` | 1a | **Offline only.** Complex-IQ capture + sealed truth from a scenario and a ≥128-bit seed |
+| `sim/generator.py`, `sim/disturbances.py` | 1a | **Offline only.** Complex-IQ capture + sealed truth from a scenario and a ≥16-byte CSPRNG seed |
 | `sim/matched.py` | 1a | Per-configuration matched-observation pairs and an online-view comparator |
 | `sim/batch.py` | 1a | Blind batches over the brief's case library (CLI) |
+| `docs/MONITORS.md` | 1b–1c | Extractor pipeline, analog model, acceptance mapping, envelope, leakage, findings |
+| `gate04/monitors.py` | 1b–1c | **Online.** Sampled-pilot and analog-monitor tracking, coverage, unattributed excursions, window state |
+| `sim/leakage.py` | 1b | Pilot ↔ scene interference by counterfactual renders |
 
 Stdlib only (enforced by a test), so the validator runs on a bench host and
 the generator's random streams don't depend on a numpy version.
 
 ```bash
-python3 -m unittest discover -s caelarch_rf/tests -t .      # 83 tests, ~10 s
+python3 -m unittest discover -s caelarch_rf/tests -t .      # 109 tests, ~35 s
 python3 -m caelarch_rf.sim.batch --captures OUT/caps --truth OUT/truth --n 40
 python3 -m caelarch_rf.gate04.validate <capture_dir>        # contract check
 python3 -m caelarch_rf.gate04.observability                 # regenerate matrix doc

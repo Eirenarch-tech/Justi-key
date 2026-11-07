@@ -9,6 +9,10 @@ Signal model (complex baseband, one SDR channel ``rx0``, ideal point sampling):
     scene/ref = a_s * exp(j(tone_s + X + G + A)) * path(port)     path: H, R, TERM=0
     pilot     = a_p * exp(j(tone_p + S + J + G + A + FG + FA))   (configs with a pilot)
     witness   = |w| * exp(j(w0 + R + K)) + noise                 (configs with a witness)
+    analog    = LPF2{ g*(pilot_P4 * conj(ref)) + scene leakage + detector noise }
+                pilot_P4 = exp(j(S + J + G + FG)); ref = exp(jM) (independent) or
+                exp(j(S + M)) (pilot-source referenced). No A: the tap is upstream of
+                the SDR. Logged by its own ADC/clock (stream mon0) with dead time.
 
 The scene and reference are time-multiplexed by a selector whose switches
 cross-fade over a true settling time. These are modelled: sample-clock error,
@@ -16,12 +20,14 @@ device-time start offset, witness timebase offset and declared-alignment
 error, LO retunes with phase reset, gain steps, reference unlock with a
 delayed lock report, overflows (known/unknown drop count), timestamp
 discontinuities, overload clipping, pilot gating, invalid witness records and
-switch guards shorter than the true settling time. The disturbance model
-covers every graph term except M, which only the analog monitor sees
-(Sprint 1c).
+switch guards shorter than the true settling time. Every graph term can be
+disturbed; M (the detector's own reference/electronics phase) only in the
+analog configurations C6/C6s.
 
 Blindness rules (refinement 3; see docs/BLIND_GENERATOR.md):
-  * seeds must carry >= 128 bits; integers are refused (enumerable);
+  * seeds must be >= 16 bytes of seed material; integers are refused
+    (enumerable). The code cannot verify entropy: production blind batches
+    must draw seeds from a CSPRNG (the batch CLI uses ``secrets``);
   * independent sub-streams: the operating schedule never reads the
     disturbance schedule; noise draws never depend on either;
   * the capture holds no seed, case name, disturbance parameter or truth-
@@ -38,6 +44,7 @@ import math
 import os
 import random
 import sys
+from collections import namedtuple
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -53,9 +60,12 @@ FIXED_CREATED = "2026-01-01T00:00:00Z"
 FIXED_MTIME = 1767225600  # 2026-01-01T00:00:00Z
 PHYS = "phys"             # truth timebase: physical ns since capture start
 
-# Configs the waveform renderer can emit (analog monitors arrive in Sprint 1c).
-EMITTED = {"C0_bracket": (False, False), "C1_witness": (False, True),
-           "C2_sampled_pilot": (True, True)}  # (pilot, witness)
+# Configs the waveform renderer can emit.
+Emit = namedtuple("Emit", "pilot witness analog")  # analog: None | 'independent' | 'pilot_source'
+EMITTED = {"C0_bracket": Emit(False, False, None), "C1_witness": Emit(False, True, None),
+           "C2_sampled_pilot": Emit(True, True, None),
+           "C6_pilot_analog": Emit(True, True, "independent"),
+           "C6s_pilot_analog_srcref": Emit(True, True, "pilot_source")}
 FAULT_KINDS = ("retune", "retune_unlocked", "gain_change", "ref_unlock", "overflow_known",
                "overflow_unknown", "time_discontinuity", "overload", "short_guard",
                "pilot_off", "witness_invalid")
@@ -68,20 +78,33 @@ SCENE_AMP = 8000.0
 CLIP_LEVEL = 32000
 BASE_GAIN_DB = 30.0
 WITNESS_MAG, WITNESS_PHASE0, WITNESS_NOISE = 0.5, 0.2, 0.002
-BACKGROUND = {"A": 2.0, "S": 5.0}  # random-walk phase noise, rad/sqrt(s)
+# Illustrative background, recorded in truth: random-walk phase noise
+# (rad/sqrt(s)) on A (LO) and S (unlocked pilot source), a pilot-source
+# frequency offset, and detector-reference drift M (analog configs only).
+BACKGROUND = {"A": 1.0, "S": 2.0}
+PILOT_FREQ_OFFSET_MAX_HZ = 300.0
+M_WALK = {"independent": 2.0, "pilot_source": 0.5}
+ANALOG_FULL_SCALE = 1.0
+ANALOG_CLIP_LEVEL = 0.999
+ANALOG_PILOT_LEVEL = 0.5     # detector output amplitude for the nominal pilot
+ANALOG_NOISE = 0.01          # complex detector noise std per grid sample, pre-filter
 
 
 # --------------------------------------------------------------------------- seeds
 
 def normalize_seed(seed) -> bytes:
-    """>= 16 bytes, given as bytes or hex. Integers are refused: a small seed
-    space lets an online method regenerate candidate captures and match noise."""
+    """>= 16 bytes of seed material, given as bytes or hex.
+
+    This checks LENGTH only; it cannot verify entropy (16 zero bytes pass).
+    Production blind batches must use a CSPRNG seed (``secrets.token_hex(32)``,
+    as the batch CLI does). Integers are refused: a small seed space lets an
+    online method regenerate candidate captures and match noise."""
     if isinstance(seed, (bytes, bytearray)):
         b = bytes(seed)
     elif isinstance(seed, str):
         b = bytes.fromhex(seed)
     else:
-        raise TypeError("seed must be bytes or a hex string with >= 128 bits; integers are refused")
+        raise TypeError("seed must be bytes or a hex string of >= 16 bytes; integers are refused")
     if len(b) < MIN_SEED_BYTES:
         raise ValueError(f"seed must carry at least {MIN_SEED_BYTES} bytes of entropy")
     return b
@@ -120,7 +143,10 @@ class Scenario:
     fs_hz: int = 1_000_000
     snr_db: float = 40.0          # scene tone SNR per sample
     pilot_rel_db: float = -20.0   # weak pilot relative to scene
-    background: bool = True       # A/S phase-noise random walks
+    background: bool = True       # A/S/M phase noise and pilot frequency offset
+    scene_on: bool = True         # False removes the scene tone (leakage studies)
+    analog_bw_hz: float = 10_000.0     # analog detector effective -3 dB bandwidth
+    monitor_rate_hz: int = 200_000     # analog logger sample rate (divides fs_hz)
     case: str = "custom"          # truth-only label
 
     def __post_init__(self):
@@ -128,10 +154,12 @@ class Scenario:
             raise ValueError(f"config {self.config!r} cannot be rendered yet; emittable: {sorted(EMITTED)}")
         if self.fs_hz <= 0 or self.duration_ns * self.fs_hz < 10 ** 12:
             raise ValueError("need at least 1000 samples")
-        pilot, witness = EMITTED[self.config]
+        pilot, witness, analog = EMITTED[self.config]
         for d in self.disturbances:
-            if d.target == "M":
-                raise ValueError("M is only observable by the analog monitor (Sprint 1c)")
+            if d.target == "M" and analog is None:
+                raise ValueError("M is only observable by the analog monitor (configs C6/C6s)")
+        if analog and self.fs_hz % self.monitor_rate_hz:
+            raise ValueError("monitor_rate_hz must divide fs_hz")
         kinds = [f.kind for f in self.faults]
         if sum(k in ("overflow_known", "overflow_unknown") for k in kinds) > 1 or kinds.count("time_discontinuity") > 1:
             raise ValueError("at most one drop and one timestamp discontinuity per capture")
@@ -194,6 +222,12 @@ def _ops_plan(master, sc: Scenario):
         wt.append(t + ops.randrange(-50_000, 50_001))
         t += 1_000_000
     plan["witness_t"] = [x for x in wt if 0 <= x < sc.duration_ns]
+    mon = stream(master, "ops_monitor")
+    plan["mon"] = {"t0_dev": mon.randrange(10 ** 9, 10 ** 12), "align_unc": 2_000,
+                   "align_err": mon.randrange(-500, 501),
+                   "dead_period_ns": mon.randrange(4_000_000, 6_000_000),
+                   "dead_first_ns": mon.randrange(1_000_000, 4_000_000),
+                   "dead_len_ns": mon.randrange(50_000, 150_000)}
     return plan
 
 
@@ -303,16 +337,26 @@ class Simulation:
 
     def __init__(self, sc: Scenario, master: bytes):
         self.sc, self.master = sc, master
-        self.pilot_on_cfg, self.witness_on = EMITTED[sc.config]
+        self.pilot_on_cfg, self.witness_on, self.analog = EMITTED[sc.config]
         plan = _ops_plan(master, sc)
         n0 = sc.duration_ns * sc.fs_hz // 10 ** 9
         self.clock = _Clock(sc.fs_hz, plan["eps"], plan["t0_dev"], n0)
         self.plan = plan
         self.fx = _faults(master, sc, self.clock, plan)
         bg = stream(master, "background")
-        self.background = [Disturbance(k, "random_walk", 0, s, sc.duration_ns,
-                                       seed=bg.getrandbits(64), cause="background")
-                           for k, s in BACKGROUND.items()] if sc.background else []
+        walks = [Disturbance(k, "random_walk", 0, s, sc.duration_ns,
+                             seed=bg.getrandbits(64), cause="background")
+                 for k, s in BACKGROUND.items()]
+        f_off = Disturbance("S", "freq_offset", 0,
+                            bg.uniform(-PILOT_FREQ_OFFSET_MAX_HZ, PILOT_FREQ_OFFSET_MAX_HZ),
+                            cause="background")
+        m_seed = bg.getrandbits(64)  # drawn for every config, so streams stay aligned
+        self.background = []
+        if sc.background:
+            self.background = walks + [f_off]
+            if self.analog:
+                self.background.append(Disturbance("M", "random_walk", 0, M_WALK[self.analog],
+                                                   sc.duration_ns, seed=m_seed, cause="background"))
         self.disturbances = self._resolve(list(sc.disturbances)) + self.fx.hidden + self.background
         self._render()
 
@@ -349,7 +393,7 @@ class Simulation:
             tone_s[n] = tone_s[n - 1] + 2 * math.pi * (SCENE_RF_HZ - f_lo[n - 1]) * dt
             tone_p[n] = tone_p[n - 1] + 2 * math.pi * (PILOT_RF_HZ - f_lo[n - 1]) * dt
         # Term phases per component (only delay_step differs between components).
-        terms = ("X", "H", "R", "J", "S", "G", "A", "FG", "FA")
+        terms = ("X", "H", "R", "J", "S", "G", "A", "FG", "FA", "M")
         ph_s = {k: [0.0] * n0 for k in terms}
         ph_p = {k: [0.0] * n0 for k in terms}
         for d in self.disturbances:
@@ -372,8 +416,10 @@ class Simulation:
         self.ph_s, self.ph_p = ph_s, ph_p
         # Selector: physical port and cross-fade weight per sample.
         sw = self.plan["switches"]
-        a_s = SCENE_AMP
+        a_s = SCENE_AMP if sc.scene_on else 0.0
         a_p = SCENE_AMP * 10 ** (sc.pilot_rel_db / 20) if self.pilot_on_cfg else 0.0
+        self.a_s, self.a_p = a_s, a_p
+        self.scene_phasor: List[complex] = []   # scene at P3/P4 (for analog leakage)
         sigma = SCENE_AMP / 10 ** (sc.snr_db / 20) / math.sqrt(2)
         noise = stream(self.master, "noise")
         gains = sorted(fx.gain)
@@ -399,7 +445,9 @@ class Simulation:
                     return cmath.exp(1j * ph_s["R"][n])
                 return 0j
             common = tone_s[n] + ph_s["X"][n] + ph_s["G"][n] + ph_s["A"][n]
-            v = a_s * cmath.exp(1j * common) * ((1 - w) * path(prev_port) + w * path(port))
+            sel = (1 - w) * path(prev_port) + w * path(port)
+            self.scene_phasor.append(sel)
+            v = a_s * cmath.exp(1j * common) * sel
             if a_p and not any(a <= t < b for a, b in fx.pilot_off):
                 pp = (tone_p[n] + ph_p["S"][n] + ph_p["J"][n] + ph_p["G"][n] + ph_p["A"][n]
                       + ph_p["FG"][n] + ph_p["FA"][n])
@@ -415,6 +463,8 @@ class Simulation:
                     v += amp * cmath.exp(2j * math.pi * fb * t * 1e-9)
             iq.append(v)
         self.iq_float = iq
+        if self.analog:
+            self._render_analog()
         # Witness (instrument timebase), evaluated at its own physical times.
         self.witness: List[dict] = []
         if self.witness_on:
@@ -432,6 +482,102 @@ class Simulation:
                     "ratio_re": round(z.real, 12), "ratio_im": round(z.imag, 12),
                     "phase_std_rad": round(WITNESS_NOISE / WITNESS_MAG, 12), "valid": valid})
 
+    def _render_analog(self):
+        """P4 quadrature detector -> two first-order sections -> logger ADC.
+
+        Detector output = (signal at P4) x conj(reference), with
+            signal    = a_p exp(j(S+J+G+FG)) + a_s exp(j(2 pi df t + X + G)) * selector
+            reference = exp(jM)        (independent oscillator)
+                      = exp(j(S+M))    (tapped from the pilot source at PS)
+        so the pilot term carries S+J+G+FG-M (or J+G+FG-M) and never A.
+        The SDR grid (1/fs) stands in for continuous time. Pulses shorter than
+        two grid steps enter by their exact overlap with each grid interval, so
+        a sub-sample glitch reaches the detector, attenuated by its bandwidth,
+        although the SDR's point samples miss it.
+        """
+        sc, ck = self.sc, self.clock
+        n0, T = ck.n0, ck.T * (1 + ck.eps)
+        srcref = self.analog == "pilot_source"
+        coef = {"S": 0 if srcref else 1, "J": 1, "G": 1, "FG": 1, "M": -1}
+        # Interval-average corrections for short pulses on detector-visible terms.
+        corr: Dict[int, complex] = {}
+        point_fix: Dict[int, float] = {}
+        for d in self.disturbances:
+            c = coef.get(d.target, 0)
+            if d.kind != "pulse" or not c or d.duration_ns >= 2 * T:
+                continue
+            t_a, t_b = d.t0_ns, d.t0_ns + d.duration_ns
+            n = int(ck.n_of(t_a))
+            for m in (n - 1, n, n + 1):
+                if not 0 <= m < n0:
+                    continue
+                lo, hi = max(t_a, self.tp[m]), min(t_b, self.tp[m] + T)
+                if t_a <= self.tp[m] < t_b:
+                    point_fix[m] = point_fix.get(m, 0.0) - c * d.value  # undo point sample
+                if hi > lo:
+                    corr[m] = corr.get(m, 0j) + (cmath.exp(1j * c * d.value) - 1) * (hi - lo) / T
+        g = ANALOG_PILOT_LEVEL / self.a_p if self.a_p else 0.0
+        b_sec = sc.analog_bw_hz / math.sqrt(2 ** 0.5 - 1)   # corner of each of two sections
+        alpha = 1 - math.exp(-T * 1e-9 * 2 * math.pi * b_sec)
+        noise = stream(self.master, "analog_noise")
+        df = SCENE_RF_HZ - PILOT_RF_HZ
+        y1 = y2 = 0j
+        out = []
+        for n in range(n0):
+            t = self.tp[n]
+            ref = self.ph_p["M"][n] + (self.ph_p["S"][n] if srcref else 0.0)
+            pil = (self.ph_p["S"][n] + self.ph_p["J"][n] + self.ph_p["G"][n] + self.ph_p["FG"][n]
+                   - ref + point_fix.get(n, 0.0))
+            on = not any(a <= t < b for a, b in self.fx.pilot_off)
+            x = self.a_p * cmath.exp(1j * pil) * (1 + corr.get(n, 0j)) if on else 0j
+            scene_ph = 2 * math.pi * df * t * 1e-9 + self.ph_s["X"][n] + self.ph_s["G"][n] - ref
+            x += self.a_s * cmath.exp(1j * scene_ph) * self.scene_phasor[n]
+            x = g * x + complex(noise.gauss(0, ANALOG_NOISE), noise.gauss(0, ANALOG_NOISE))
+            y1 += alpha * (x - y1)
+            y2 += alpha * (y1 - y2)
+            out.append(y2)
+        self.analog_out = out
+        decim = sc.fs_hz // sc.monitor_rate_hz
+        mp = self.plan["mon"]
+        logged, dead = [], []
+        t_dead = mp["dead_first_ns"]
+        for k_orig, k in enumerate(range(0, n0, decim)):
+            t = self.tp[k]
+            while t >= t_dead + mp["dead_len_ns"]:
+                t_dead += mp["dead_period_ns"]
+            if t_dead <= t:
+                dead.append(k_orig)
+            else:
+                v = out[k]
+                logged.append((k_orig, complex(max(-ANALOG_FULL_SCALE, min(ANALOG_FULL_SCALE, v.real)),
+                                               max(-ANALOG_FULL_SCALE, min(ANALOG_FULL_SCALE, v.imag)))))
+        self.mon_logged = logged          # (logger index, value) actually recorded
+        self.mon_dead = dead              # logger indices lost to dead time
+        self.mon_T = 1e9 / sc.monitor_rate_hz
+        self.mon_decim = decim
+
+    def monitor_bytes(self) -> bytes:
+        a = array.array("f")
+        for _, v in self.mon_logged:
+            a.extend((v.real, v.imag))
+        if sys.byteorder != "little":
+            a.byteswap()
+        return a.tobytes()
+
+    def monitor_dead_runs(self):
+        """[(file index of first sample after the gap, dropped, orig index after gap)]."""
+        runs = []
+        for k in self.mon_dead:
+            if runs and k == runs[-1][0] + runs[-1][1]:
+                runs[-1][1] += 1
+            else:
+                runs.append([k, 1])
+        out, lost = [], 0
+        for k0, cnt in runs:
+            lost += cnt
+            out.append((k0 + cnt - lost, cnt, k0 + cnt))
+        return out
+
     # ---------------------------------------------------------------- outputs
 
     def quantized(self) -> array.array:
@@ -445,37 +591,41 @@ class Simulation:
         return a
 
     def events(self) -> List[dict]:
+        """Online events, ordered by physical time (each timebase stays monotonic)."""
         ck, fx = self.clock, self.fx
-        evs: List[Tuple[int, int, dict]] = []
-        order = 0
+        evs: List[Tuple[float, int, int, str, dict]] = []   # (t_phys, order, t_ns, tb, ev)
+
+        def add(t_phys, t_ns, tb, e):
+            evs.append((t_phys, len(evs), t_ns, tb, e))
         for s in self.plan["switches"]:
-            evs.append((ck.dev(s["t"]), order, {"type": "SWITCH_COMMAND", "port": s["port"]}))
-            order += 1
+            add(s["t"], ck.dev(s["t"]), "sdr0", {"type": "SWITCH_COMMAND", "port": s["port"]})
             if s["report"]:
-                evs.append((ck.dev(s["t"] + s["settle"] + s["report_lat"]), order,
-                            {"type": "SETTLED", "stream_id": "rx0", "cause": "switch"}))
-                order += 1
+                t = s["t"] + s["settle"] + s["report_lat"]
+                add(t, ck.dev(t), "sdr0", {"type": "SETTLED", "stream_id": "rx0", "cause": "switch"})
         for t, e in fx.events:
-            evs.append((ck.dev(t), order, dict(e)))
-            order += 1
+            add(t, ck.dev(t), "sdr0", dict(e))
         if ck.drop is not None:
             i, k, known = ck.drop
-            evs.append((int(round(ck.dev_exact(i + k))), order,
-                        {"type": "OVERFLOW", "stream_id": "rx0", "sample_index": i,
-                         "dropped_samples": k if known else None}))
-            order += 1
+            add(ck.tp(i + k), int(round(ck.dev_exact(i + k))), "sdr0",
+                {"type": "OVERFLOW", "stream_id": "rx0", "sample_index": i,
+                 "dropped_samples": k if known else None})
         if ck.jump_index is not None:
             fi = ck.file_index(ck.jump_index)
             if fi is not None and fi > 0:
-                evs.append((int(round(ck.dev_exact(ck.jump_index))), order,
-                            {"type": "TIME_DISCONTINUITY", "stream_id": "rx0",
-                             "sample_index": fi, "jump_ns": ck.jump_ns}))
-                order += 1
+                add(ck.tp(ck.jump_index), int(round(ck.dev_exact(ck.jump_index))), "sdr0",
+                    {"type": "TIME_DISCONTINUITY", "stream_id": "rx0",
+                     "sample_index": fi, "jump_ns": ck.jump_ns})
+        if self.analog:
+            mp = self.plan["mon"]
+            for file_idx, cnt, orig_after in self.monitor_dead_runs():
+                if file_idx <= 0 or file_idx >= len(self.mon_logged):
+                    continue
+                add(self.tp[orig_after * self.mon_decim], int(round(mp["t0_dev"] + orig_after * self.mon_T)),
+                    "mon0", {"type": "OVERFLOW", "stream_id": "mon0", "sample_index": file_idx,
+                             "dropped_samples": cnt})
         evs.sort(key=lambda x: (x[0], x[1]))
-        out = []
-        for seq, (t, _, e) in enumerate(evs):
-            out.append({"seq": seq, "type": e.pop("type"), "timebase": "sdr0", "t_ns": t, **e})
-        return out
+        return [{"seq": seq, "type": e.pop("type"), "timebase": tb, "t_ns": t_ns, **e}
+                for seq, (_, _, t_ns, tb, e) in enumerate(evs)]
 
     def sample_count(self):
         return self.clock.n0 - (self.clock.drop[1] if self.clock.drop else 0)
@@ -517,7 +667,7 @@ def generate(scenario: Scenario, seed, capture_dir, truth_path) -> dict:
     if os.path.exists(truth_path):
         raise FileExistsError(f"truth file {truth_path!r} already exists")
     sim = Simulation(scenario, master)
-    pilot, witness = EMITTED[scenario.config]
+    pilot, witness, analog = EMITTED[scenario.config]
     cid = capture_id_for(master)
     os.makedirs(capture_dir, exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(truth_path)), exist_ok=True)
@@ -529,6 +679,8 @@ def generate(scenario: Scenario, seed, capture_dir, truth_path) -> dict:
              "events.jsonl": "".join(json.dumps(e) + "\n" for e in sim.events()).encode()}
     if witness:
         files["witness.jsonl"] = "".join(json.dumps(w) + "\n" for w in sim.witness).encode()
+    if analog:
+        files["mon0.fc32"] = sim.monitor_bytes()
     for name, data in files.items():
         with open(os.path.join(capture_dir, name), "wb") as f:
             f.write(data)
@@ -546,6 +698,20 @@ def generate(scenario: Scenario, seed, capture_dir, truth_path) -> dict:
         aligns.append({"from": "wit0", "to": "sdr0",
                        "offset_ns": p["t0_dev"] - p["wit_offset"] + p["wit_align_err"],
                        "uncertainty_ns": p["wit_align_unc"], "method": "shared_pps_trigger"})
+    streams_extra = []
+    if analog:
+        mp = p["mon"]
+        timebases.append({"id": "mon0", "kind": "instrument"})
+        aligns.append({"from": "mon0", "to": "sdr0", "offset_ns": p["t0_dev"] - mp["t0_dev"] + mp["align_err"],
+                       "uncertainty_ns": mp["align_unc"], "method": "shared_pps_trigger"})
+        streams_extra.append({
+            "stream_id": "mon0", "channel": 0, "file": "mon0.fc32", "sha256": sha["mon0.fc32"],
+            "format": "fc32_le", "sample_count": len(sim.mon_logged),
+            "sample_rate_hz": scenario.monitor_rate_hz, "center_freq_hz": PILOT_RF_HZ,
+            "rx_gain_db": 0.0, "timebase": "mon0", "t0_ns": mp["t0_dev"],
+            "clip_level": ANALOG_CLIP_LEVEL, "carries": ["analog_monitor"], "pilot": None,
+            "monitor": {"kind": "analog_quadrature", "reference": analog,
+                        "detector_bandwidth_hz": scenario.analog_bw_hz, "tap_plane": "P4"}})
     manifest = {
         "schema": C.SCHEMA_MANIFEST, "capture_id": cid, "created_utc": FIXED_CREATED,
         "graph_version": C.GRAPH_VERSION,
@@ -563,7 +729,7 @@ def generate(scenario: Scenario, seed, capture_dir, truth_path) -> dict:
             "t0_ns": p["t0_dev"], "clip_level": CLIP_LEVEL,
             "carries": ["scene", "reference"] + (["pilot"] if pilot else []),
             "pilot": {"offset_hz": PILOT_RF_HZ - CENTER0_HZ, "waveform_id": "cw"} if pilot else None,
-        }],
+        }] + streams_extra,
         "events_file": "events.jsonl", "events_sha256": sha["events.jsonl"],
         "witness_file": "witness.jsonl" if witness else None,
         "witness_sha256": sha.get("witness.jsonl"),

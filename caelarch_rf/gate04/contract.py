@@ -45,7 +45,7 @@ FORMATS = {
     # UHD "float": interleaved little-endian float32 I,Q.
     "fc32_le": {"bytes_per_sample": 8},
 }
-CARRIES = ("scene", "reference", "pilot")
+CARRIES = ("scene", "reference", "pilot", "analog_monitor")
 SELECTOR_PORTS = ("H", "R", "THRU", "TERM")
 CLOCK_REF = ("internal", "external_10mhz", "gpsdo")
 PPS_SOURCE = ("none", "external", "gpsdo")
@@ -95,11 +95,17 @@ STREAM_FIELDS = {
     "stream_id": "id", "channel": "nat", "file": "file", "sha256": "hex64",
     "format": tuple(FORMATS), "sample_count": "pos_int", "sample_rate_hz": "pos",
     "center_freq_hz": "pos", "rx_gain_db": "num", "timebase": "id", "t0_ns": "int",
-    "clip_level": "pos", "carries": "carries", "pilot": "pilot?",
+    "clip_level": "pos", "carries": "carries", "pilot": "pilot?", "monitor": "monitor?",
 }
+# Analog quadrature detector output logged as its own stream (Sprint 1c).
+MONITOR_FIELDS = {"kind": ("analog_quadrature",), "reference": ("independent", "pilot_source"),
+                  "detector_bandwidth_hz": "pos", "tap_plane": ("P4",)}
 PILOT_FIELDS = {"offset_hz": "num", "waveform_id": "id"}
+# ``valid_from_ns`` (on the ``to`` timebase) starts a requalified alignment
+# epoch, e.g. after a TIME_DISCONTINUITY voided the previous one.
 ALIGN_FIELDS = {"from": "id", "to": "id", "offset_ns": "int", "uncertainty_ns": "nat",
-                "method": ("shared_pps_trigger", "loopback_xcorr", "manual_bench")}
+                "method": ("shared_pps_trigger", "loopback_xcorr", "manual_bench"),
+                "valid_from_ns": "int?"}
 QUALREF_FIELDS = {"record_id": "id", "record_sha256": "hex64"}
 COMMITMENT_FIELDS = {"scheme": ("sha256-salted-v1",), "digest": "hex64"}
 
@@ -175,6 +181,8 @@ def _check_value(path, spec, v):
             _fail(path, f"expected non-empty unique subset of {CARRIES}")
     elif kind == "pilot":
         _check_obj(path, PILOT_FIELDS, v)
+    elif kind == "monitor":
+        _check_obj(path, MONITOR_FIELDS, v)
     elif kind == "qualref":
         _check_obj(path, QUALREF_FIELDS, v)
     elif kind == "commitment":
@@ -222,10 +230,15 @@ def validate_manifest(m):
     tb_ids = [tb["id"] for tb in m["timebases"]]
     if len(set(tb_ids)) != len(tb_ids):
         _fail("manifest.timebases", "duplicate timebase id")
+    epochs = set()
     for i, a in enumerate(m["timebase_alignments"]):
         p = f"manifest.timebase_alignments[{i}]"
         if a["from"] not in tb_ids or a["to"] not in tb_ids or a["from"] == a["to"]:
             _fail(p, "alignment must join two distinct declared timebases")
+        key = (frozenset((a["from"], a["to"])), a.get("valid_from_ns"))
+        if key in epochs:
+            _fail(p, "duplicate alignment epoch for this timebase pair")
+        epochs.add(key)
 
     sids, files = set(), {m["events_file"]}
     if (m.get("witness_file") is None) != (m.get("witness_sha256") is None):
@@ -246,6 +259,10 @@ def validate_manifest(m):
             _fail(p, f"unknown timebase {s['timebase']!r}")
         if ("pilot" in s["carries"]) != (s.get("pilot") is not None):
             _fail(p, "a stream carries a pilot iff it declares the pilot block")
+        if ("analog_monitor" in s["carries"]) != (s.get("monitor") is not None):
+            _fail(p, "a stream carries analog_monitor iff it declares the monitor block")
+        if "analog_monitor" in s["carries"] and len(s["carries"]) != 1:
+            _fail(p, "an analog monitor stream carries nothing else")
         if s.get("pilot") is not None and abs(s["pilot"]["offset_hz"]) >= s["sample_rate_hz"] / 2:
             _fail(p, "pilot offset outside the stream's Nyquist band")
         if s["format"] == "sc16_le" and not s["clip_level"] <= 32767:

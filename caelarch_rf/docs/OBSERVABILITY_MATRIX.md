@@ -34,6 +34,10 @@ Structural, linearised phase model. **Necessary, not sufficient**: a cell that i
 | `analog_monitor_P4` | P4, independent detector reference | . | . | . | . | +1 | +1 | +1 | . | +1 | . | -1 | hypothetical |
 | `analog_monitor_P4_srcref` | P4, reference tapped from pilot source at PS | . | . | . | . | +1 | . | +1 | . | +1 | . | -1 | hypothetical |
 | `pilot_path_monitor` | PS -> J (independent coupler/detector) | . | . | . | . | +1 | +1 | . | . | . | . | . | hypothetical |
+| `leak_analog_H` | P4 detector, scene leakage (selector on H) | +1 | +1 | . | . | . | . | +1 | . | . | . | -1 | hypothetical |
+| `leak_analog_R` | P4 detector, scene leakage (selector on R) | +1 | . | +1 | . | . | . | +1 | . | . | . | -1 | hypothetical |
+| `leak_analog_srcref_H` | Source-referenced P4 detector, scene leakage (selector on H) | +1 | +1 | . | . | . | -1 | +1 | . | . | . | -1 | hypothetical |
+| `leak_analog_srcref_R` | Source-referenced P4 detector, scene leakage (selector on R) | +1 | . | +1 | . | . | -1 | +1 | . | . | . | -1 | hypothetical |
 
 ## Configuration x impairment (online attribution)
 
@@ -48,17 +52,21 @@ Structural, linearised phase model. **Necessary, not sufficient**: a cell that i
 | `C3s_analog_P4_srcref` | scene, reference, witness, analog_monitor_P4_srcref | K_qualified, X_bounded, J_bounded, F_bounded, M_bounded | cond | cond | cond | cond | cond | - | cond | cond | cond | - | cond | cond |
 | `C4_pilot_plus_path` | scene, reference, witness, pilot_sampled, pilot_path_monitor | K_qualified, X_bounded, F_bounded | cond | cond | cond | cond | conf | conf | conf | conf | cond | cond | - | cond |
 | `C5_all` | scene, reference, witness, pilot_sampled, analog_monitor_P4, pilot_path_monitor | K_qualified, X_bounded, F_bounded, M_bounded | cond | cond | cond | cond | conf | conf | cond | cond | cond | cond | cond | cond |
+| `C6_pilot_analog` | scene, reference, witness, pilot_sampled, analog_monitor_P4 | K_qualified, X_bounded, SJ_bounded, F_bounded, M_bounded | cond | cond | cond | cond | conf | conf | cond | cond | cond | cond | cond | cond |
+| `C6s_pilot_analog_srcref` | scene, reference, witness, pilot_sampled, analog_monitor_P4_srcref | K_qualified, X_bounded, J_bounded, F_bounded, M_bounded | cond | cond | cond | cond | cond | cond | cond | cond | cond | cond | cond | cond |
 
 ## Qualification requirements
 
 | Id | Assumption | Requirement |
 |---|---|---|
 | **QR-K** | `K_qualified` | Witness differential transfer K characterised at the P0/P1 planes, with drift bound over the capture |
-| **QR-X** | `X_bounded` | Known RF source phase X bounded (or independently monitored) over every bracket span; required by finding R1 |
+| **QR-X** | `X_bounded` | Known RF source phase X bounded (or independently monitored) over every bracket span (finding R1). Makes U=AG estimable only AT reference observation instants; it does NOT make U excursions between references observable, so the Gate 0.3 inter-reference gap stays open |
 | **QR-SJ** | `SJ_bounded` | Joint pilot source + injection path drift S+J bounded |
 | **QR-J** | `J_bounded` | Injection path J drift bounded on its own (source-referenced detector) |
 | **QR-F** | `F_bounded` | Pilot-vs-scene transfer equivalence: FG and FA each bounded across the scene band |
 | **QR-M** | `M_bounded` | Analog detector reference and electronics drift M bounded |
+
+**Temporal scope.** `attrib`/`cond` mean estimable *at the instants the contributing sensors observe*. Scene and reference are time-multiplexed, so any estimate that needs the reference exists only during reference dwells. In particular {QR-K, QR-X} makes `U=AG` estimable at reference instants only: a stable source does **not** close the Gate 0.3 inter-reference observability gap. Excursions between references are visible only to a continuously observing sensor (sampled pilot, analog detector), and only inside its coverage envelope.
 
 Minimal requirement sets per configuration: each alternative (separated by *or*) is a smallest set of QRs that makes the quantity estimable. A quantity absent from a row stays confounded under every candidate assumption.
 
@@ -69,6 +77,8 @@ Minimal requirement sets per configuration: each alternative (separated by *or*)
 - **C3s_analog_P4_srcref**: `X`: {QR-X}; `H`: {QR-K}; `R`: {QR-K}; `K`: {QR-K}; `J`: {QR-J}; `G`: {QR-J, QR-F, QR-M}; `A`: {QR-K, QR-X, QR-J, QR-F, QR-M}; `FG`: {QR-F}; `M`: {QR-M}; `U=AG`: {QR-K, QR-X}
 - **C4_pilot_plus_path**: `X`: {QR-X} *or* {QR-K, QR-F}; `H`: {QR-K} *or* {QR-X, QR-F}; `R`: {QR-K} *or* {QR-X, QR-F}; `K`: {QR-K} *or* {QR-X, QR-F}; `FG`: {QR-F}; `FA`: {QR-F}; `U=AG`: {QR-F} *or* {QR-K, QR-X}
 - **C5_all**: `X`: {QR-X} *or* {QR-K, QR-F}; `H`: {QR-K} *or* {QR-X, QR-F}; `R`: {QR-K} *or* {QR-X, QR-F}; `K`: {QR-K} *or* {QR-X, QR-F}; `G`: {QR-F, QR-M}; `A`: {QR-F, QR-M}; `FG`: {QR-F}; `FA`: {QR-F}; `M`: {QR-M}; `U=AG`: {QR-F} *or* {QR-K, QR-X}
+- **C6_pilot_analog**: `X`: {QR-X} *or* {QR-K, QR-SJ, QR-F}; `H`: {QR-K} *or* {QR-X, QR-SJ, QR-F}; `R`: {QR-K} *or* {QR-X, QR-SJ, QR-F}; `K`: {QR-K} *or* {QR-X, QR-SJ, QR-F}; `G`: {QR-SJ, QR-F, QR-M} *or* {QR-K, QR-X, QR-F, QR-M}; `A`: {QR-F, QR-M}; `FG`: {QR-F}; `FA`: {QR-F}; `M`: {QR-M}; `U=AG`: {QR-K, QR-X} *or* {QR-SJ, QR-F}
+- **C6s_pilot_analog_srcref**: `X`: {QR-X}; `H`: {QR-K}; `R`: {QR-K}; `K`: {QR-K}; `J`: {QR-J}; `S`: {QR-K, QR-X, QR-J, QR-F}; `G`: {QR-J, QR-F, QR-M}; `A`: {QR-K, QR-X, QR-J, QR-F, QR-M}; `FG`: {QR-F}; `FA`: {QR-F}; `M`: {QR-M}; `U=AG`: {QR-K, QR-X}
 
 ## Minimal confounding sets (online data only)
 
@@ -81,6 +91,18 @@ Each set is a *circuit*: some non-zero combination of changes to exactly those i
 - **C3s_analog_P4_srcref** (Option B with the detector referenced to the pilot source): `{X,A}`, `{J,FG}`, `{J,M}`, `{FG,M}`, `{X,J,G}`, `{X,G,FG}`, `{X,G,M}`, `{J,G,A}`, `{G,A,FG}`, `{G,A,M}`, `{X,H,R,K}`, `{H,R,K,A}`, `{H,R,K,J,G}`, `{H,R,K,G,FG}`, `{H,R,K,G,M}`
 - **C4_pilot_plus_path** (Option A + independent pilot-path monitor): `{J,S}`, `{G,A}`, `{FG,FA}`, `{X,G,FG}`, `{X,G,FA}`, `{X,A,FG}`, `{X,A,FA}`, `{X,H,R,K}`, `{H,R,K,G,FG}`, `{H,R,K,G,FA}`, `{H,R,K,A,FG}`, `{H,R,K,A,FA}`
 - **C5_all** (Every candidate sensor (independent-reference detector)): `{J,S}`, `{X,G,FG}`, `{X,A,FA}`, `{G,A,M}`, `{FG,FA,M}`, `{X,H,R,K}`, `{X,G,FA,M}`, `{X,A,FG,M}`, `{G,A,FG,FA}`, `{H,R,K,G,FG}`, `{H,R,K,A,FA}`, `{H,R,K,G,FA,M}`, `{H,R,K,A,FG,M}`
+- **C6_pilot_analog** (Sampled pilot + P4 detector, independent reference): `{J,S}`, `{J,FG}`, `{S,FG}`, `{X,J,G}`, `{X,S,G}`, `{X,G,FG}`, `{X,A,FA}`, `{J,FA,M}`, `{S,FA,M}`, `{G,A,M}`, `{FG,FA,M}`, `{X,H,R,K}`, `{X,J,A,M}`, `{X,S,A,M}`, `{X,G,FA,M}`, `{X,A,FG,M}`, `{J,G,A,FA}`, `{S,G,A,FA}`, `{G,A,FG,FA}`, `{H,R,K,J,G}`, `{H,R,K,S,G}`, `{H,R,K,G,FG}`, `{H,R,K,A,FA}`, `{H,R,K,J,A,M}`, `{H,R,K,S,A,M}`, `{H,R,K,G,FA,M}`, `{H,R,K,A,FG,M}`
+- **C6s_pilot_analog_srcref** (Sampled pilot + P4 detector referenced to the pilot source): `{J,FG}`, `{S,FA}`, `{X,J,G}`, `{X,S,A}`, `{X,G,FG}`, `{X,A,FA}`, `{J,S,M}`, `{J,FA,M}`, `{S,FG,M}`, `{G,A,M}`, `{FG,FA,M}`, `{X,H,R,K}`, `{X,J,A,M}`, `{X,S,G,M}`, `{X,G,FA,M}`, `{X,A,FG,M}`, `{J,S,G,A}`, `{J,G,A,FA}`, `{S,G,A,FG}`, `{G,A,FG,FA}`, `{H,R,K,J,G}`, `{H,R,K,S,A}`, `{H,R,K,G,FG}`, `{H,R,K,A,FA}`, `{H,R,K,J,A,M}`, `{H,R,K,S,G,M}`, `{H,R,K,G,FA,M}`, `{H,R,K,A,FG,M}`
+
+## Circuits broken by unintended scene leakage into the P4 detector
+
+Found by rendering (Sprint 1c): the detector also receives the scene tone, attenuated by its filter, so it weakly observes `X+H/R+G-M` (and `-S` when source-referenced). These circuits remain indistinguishable to the current monitors (the leakage is far below their detection floor after block averaging), but NOT information-theoretically: an estimator that exploited the leakage could separate them.
+
+- **C3_analog_P4**: `{X,A}`, `{J,M}`, `{S,M}`, `{FG,M}`, `{X,G,M}`, `{J,G,A}`, `{S,G,A}`, `{G,A,FG}`, `{H,R,K,A}`, `{H,R,K,G,M}`
+- **C3s_analog_P4_srcref**: `{X,A}`, `{J,M}`, `{FG,M}`, `{X,G,M}`, `{J,G,A}`, `{G,A,FG}`, `{H,R,K,A}`, `{H,R,K,G,M}`
+- **C5_all**: `{X,A,FA}`, `{FG,FA,M}`, `{X,G,FA,M}`, `{G,A,FG,FA}`, `{H,R,K,A,FA}`, `{H,R,K,G,FA,M}`
+- **C6_pilot_analog**: `{X,A,FA}`, `{J,FA,M}`, `{S,FA,M}`, `{FG,FA,M}`, `{X,G,FA,M}`, `{J,G,A,FA}`, `{S,G,A,FA}`, `{G,A,FG,FA}`, `{H,R,K,A,FA}`, `{H,R,K,G,FA,M}`
+- **C6s_pilot_analog_srcref**: `{S,FA}`, `{X,A,FA}`, `{J,FA,M}`, `{FG,FA,M}`, `{X,G,FA,M}`, `{J,G,A,FA}`, `{G,A,FG,FA}`, `{H,R,K,A,FA}`, `{H,R,K,G,FA,M}`
 
 ## Temporal coverage (qualitative; not in the rank analysis)
 
@@ -93,3 +115,7 @@ Each set is a *circuit*: some non-zero combination of changes to exactly those i
 | `analog_monitor_P4` | Continuous-time but band-limited by detector; cannot see A; adds its own drift M |
 | `analog_monitor_P4_srcref` | As analog_monitor_P4, but source phase S cancels; reference-path drift enters as M |
 | `pilot_path_monitor` | Independent observation of source+injection; does not exist yet |
+| `leak_analog_H` | Unintended; strongly attenuated by the detector filter and block averaging |
+| `leak_analog_R` | Unintended; strongly attenuated by the detector filter and block averaging |
+| `leak_analog_srcref_H` | Unintended; S enters through the source-derived reference |
+| `leak_analog_srcref_R` | Unintended; S enters through the source-derived reference |

@@ -298,10 +298,41 @@ class TestWitnessFreshness(Base):
         self.write(events=ev)
         cap = load_capture(self.root)
         self.assertEqual(cap.latest_witness(3_900_000, "sdr0", 10 ** 9).reason, "OK")
-        # The witness at 6 ms (wit0) would map past the jump: refused, so the
-        # newest usable record is the pre-jump one at 2 ms.
         self.assertIsNone(cap.map_time(6_000_000, "wit0", "sdr0"))
-        self.assertEqual(cap.latest_witness(9_000_000, "sdr0", 10 ** 9).record["seq"], 0)
+
+    def test_post_jump_decision_never_uses_pre_jump_witness(self):
+        """Review finding P1: a generous max_age must not let a pre-jump record through."""
+        ev = [{"seq": 0, "type": "TIME_DISCONTINUITY", "timebase": "sdr0", "t_ns": 4_000_000,
+               "stream_id": "rx0", "sample_index": 4000, "jump_ns": 50_000}]
+        self.write(events=ev)
+        cap = load_capture(self.root)
+        for t in (4_000_000, 4_000_001, 9_000_000, 10 ** 12):
+            w = cap.latest_witness(t, "sdr0", max_age_ns=10 ** 15)
+            with self.subTest(t=t):
+                self.assertIsNone(w.record)
+                self.assertEqual(w.reason, "ALIGNMENT_VOID_AFTER_DISCONTINUITY")
+
+    def test_requalified_alignment_epoch_restores_freshness_only_after_its_start(self):
+        m = synth.base_manifest()
+        m["timebase_alignments"].append({"from": "wit0", "to": "sdr0", "offset_ns": 50_000,
+                                         "uncertainty_ns": 500, "method": "loopback_xcorr",
+                                         "valid_from_ns": 5_000_000})
+        ev = [{"seq": 0, "type": "TIME_DISCONTINUITY", "timebase": "sdr0", "t_ns": 4_000_000,
+               "stream_id": "rx0", "sample_index": 4000, "jump_ns": 50_000}]
+        self.write(manifest=m, events=ev)
+        cap = load_capture(self.root)
+        # Between the jump and requalification: nothing.
+        self.assertEqual(cap.latest_witness(4_900_000, "sdr0", 10 ** 15).reason,
+                         "ALIGNMENT_VOID_AFTER_DISCONTINUITY")
+        # After: only the record in the new epoch (6 ms wit0 -> 6.05 ms sdr0), never the 2 ms one.
+        w = cap.latest_witness(9_000_000, "sdr0", 10 ** 15)
+        self.assertEqual((w.reason, w.record["seq"]), ("OK", 1))
+        self.assertEqual(w.age_ns, 9_000_000 - (6_050_000 - 500))
+
+    def test_duplicate_alignment_epoch_refused(self):
+        m = synth.base_manifest()
+        m["timebase_alignments"].append(dict(m["timebase_alignments"][0]))
+        self.refused("duplicate alignment epoch", manifest=m)
 
     def test_witness_without_alignment_is_unusable(self):
         m = synth.base_manifest()

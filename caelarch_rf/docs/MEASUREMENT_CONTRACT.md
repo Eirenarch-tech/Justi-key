@@ -39,10 +39,13 @@ therefore cannot sit next to the data "for convenience".
   the conservative direction.
 * A shared 10 MHz/PPS is *not* an alignment by itself. Someone has to measure
   the offset and declare it with a method and an uncertainty.
-* A declared alignment is **void from the first `TIME_DISCONTINUITY`** on
-  either of its timebases. A witness that would map across a clock jump is
-  not used. An event that can't be placed for that reason rejects the stream
-  from the discontinuity onward.
+* Alignments are **epochs**. An alignment holds from its optional
+  `valid_from_ns` (on its `to` timebase; default −∞) until the first
+  `TIME_DISCONTINUITY` on **either** clock after that. A cross-clock time
+  maps only through an epoch that certainly contains it. After a jump,
+  nothing maps until a **requalified** epoch is declared (a new alignment
+  entry with `valid_from_ns`). An event that can't be placed for that reason
+  rejects the stream from the discontinuity onward.
 * An event time inside an overflow dropout gap resolves to the gap's
   boundary samples. A time in an untimed tail resolves to the tail's start.
   Neither ever falls back to sample 0.
@@ -57,7 +60,7 @@ therefore cannot sit next to the data "for convenience".
 | `clock` | `ref_source`, `pps_source`, `ref_locked_at_start` |
 | `timebases`, `timebase_alignments` | §2 |
 | `settling` | `switch_guard_ns`, `retune_guard_ns`, `gain_guard_ns`: minimum discard after each action |
-| `streams[]` | `stream_id`, `channel`, `file`, `sha256`, `format` (`sc16_le`/`fc32_le`, UHD interleaved), `sample_count`, `sample_rate_hz`, `center_freq_hz`, `rx_gain_db`, `timebase`, `t0_ns`, `clip_level`, `carries` ⊆ {scene, reference, pilot}, `pilot` {offset_hz relative to the *initial* `center_freq_hz`; follow `LO_RETUNE` events, waveform_id} |
+| `streams[]` | `stream_id`, `channel`, `file`, `sha256`, `format` (`sc16_le`/`fc32_le`, UHD interleaved), `sample_count`, `sample_rate_hz`, `center_freq_hz`, `rx_gain_db`, `timebase`, `t0_ns`, `clip_level`, `carries` ⊆ {scene, reference, pilot, analog_monitor}, `pilot` {offset_hz relative to the *initial* `center_freq_hz`; follow `LO_RETUNE` events, waveform_id}, `monitor` {kind `analog_quadrature`, reference `independent`/`pilot_source`, detector_bandwidth_hz, tap_plane `P4`}. A stream carries `analog_monitor` iff it has the `monitor` block, and then carries nothing else |
 | `events_file`/`events_sha256`, `witness_file`/`witness_sha256` | Sidecar files |
 | `qualification_ref` | {record_id, record_sha256} of a signed physical qualification record, or null. **Not verified by this package** |
 | `truth_commitment` | {scheme `sha256-salted-v1`, digest}, or null (null means the capture cannot be scored blind) |
@@ -80,8 +83,8 @@ Common fields: `seq` (strictly increasing), `type`, `timebase`, `t_ns`
 | `SETTLED` | `stream_id`, `cause` | Can **extend** the guard to the device-reported settle time. Never shortens it |
 | `OVERFLOW` | `stream_id`, `sample_index`, `dropped_samples` or null | Known drop: new time segment, boundary samples rejected. **Unknown drop: every later sample is untimed and rejected** |
 | `TIME_DISCONTINUITY` | `stream_id`, `sample_index`, `jump_ns` | New time segment. A backwards jump makes the rest of the stream untimed |
-| `REF_LOCK` | `locked` | Reject while unlocked. If it can't be ordered against a stream, reject the whole stream |
-| `PILOT_STATE` | `enabled` | Pilot-off ranges (scene still usable) |
+| `REF_LOCK` | `locked` | Reject while unlocked, **for streams on the reporting event's timebase only**: another device's lock state does not gate them. If it can't be ordered against such a stream, reject the whole stream. `clock.ref_locked_at_start` likewise applies to `sdr_device` timebases only |
+| `PILOT_STATE` | `enabled` | Pilot-off ranges on pilot and analog-monitor streams (scene still usable) |
 
 These are things the SDR host or scheduler knows at run time. The **blind
 perturbation controller's actions are not an event type.** They exist only in
@@ -98,9 +101,11 @@ port `UNKNOWN`. They must not be used as scene or reference.
 `seq`, `timebase`, `t_ns`, `instrument`, `plane_cal_id`, `ratio_re`,
 `ratio_im` (W1/W0), `phase_std_rad`, `valid`.
 `OnlineCapture.latest_witness(t, timebase, max_age_ns)` returns the newest
-valid record that was **certainly** in the past (`t_w + u ≤ t`). Its age is
-conservative (`t − (t_w − u)`; across a positive clock jump it overstates the
-age by the jump). The result reason is one of `OK`, `STALE`,
+valid record that was **certainly** in the past (`t_w + u ≤ t`) **and lies in
+the same alignment epoch as the decision** (for a same-timebase witness: the
+same clock segment). A pre-jump witness is therefore never fresh after a
+jump, however generous `max_age_ns` is. Its age is conservative
+(`t − (t_w − u)`). The result reason is one of `OK`, `STALE`,
 `NO_VALID_PRIOR_WITNESS`, `NO_TIMEBASE_ALIGNMENT`,
 `ALIGNMENT_VOID_AFTER_DISCONTINUITY`, `NO_WITNESS_FILE`. A witness
 without an alignment to the SDR timebase is never fresh.

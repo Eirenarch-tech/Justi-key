@@ -62,7 +62,11 @@ ones. Each is a regression test.
 5. **Known-source drift X is an identifiability problem (R1, now QR-X).**
    `{X,G}` and `{X,A}` are circuits in C0/C1, and the W0/W1 ratio cancels X.
    In the Gate 0.3 baseline (C1), `U=AG` is estimable only under
-   **{QR-K, QR-X}**. The ambiguity is configuration-specific: with a sampled
+   **{QR-K, QR-X}**, and **only at reference observation instants**. A
+   stable source does not make receiver excursions *between* references
+   observable: the Gate 0.3 inter-reference gap stays open. Only a
+   continuously observing sensor (sampled pilot or analog detector) sees
+   between references, and only inside its coverage envelope. The ambiguity is configuration-specific: with a sampled
    pilot (C2), `{X,G}` is no longer a circuit, although `{X,J,G}` and
    `{X,S,G}` are. C2 offers two independent routes to `U`: {QR-K, QR-X}
    *or* {QR-SJ, QR-F}.
@@ -75,6 +79,11 @@ ones. Each is a regression test.
    `OBSERVABILITY_MATRIX.md` lists, for every configuration and every
    conditionally estimable quantity, the minimal sets of QR-K, QR-X, QR-SJ,
    QR-J, QR-F and QR-M that a signed record must satisfy.
+8. **Scene leakage gives the P4 detector an unintended channel** (Sprint 1c).
+   The detector weakly observes `X+H/R+G−M` (and `−S` when
+   source-referenced). This breaks 10 of the 27 C6 and 9 of the 28 C6s
+   circuits *information-theoretically*. The current monitors still can't
+   separate those pairs. See `MONITORS.md`.
 
 What the model leaves out: noise, amplitude, time multiplexing of scene and
 reference, sampling, detector bandwidth, non-linearity. Those belong to the
@@ -107,7 +116,10 @@ qualification-record verifier exists.
 | R10 | Code lives in the JustiKey repo | No dedicated Caelarch repository was available in this session | Move `caelarch_rf/` to its own repository with history (`git subtree split`), without interrupting current work |
 | R11 | Ideal point sampling in the generator | "Intersample glitches are invisible" is a model artifact. A real anti-alias filter leaks them | Sprint 1c front-end model. No unobservability claims from 1a captures |
 | R12 | Lock-detect and settling reports lag physics | Unlocked or unsettled samples before the report, or beyond a short guard, are accepted online | Generator hazards `ref_unlock` and `short_guard`. Measure real latencies and guards on the bench (P1.x). The scorer counts accepted-but-bad samples |
-| R13 | Clock discontinuities invalidate timebase alignments | A witness mapped across a jump is misplaced by the jump | Fixed: alignments are void after `TIME_DISCONTINUITY`. Re-alignment procedure needed for hardware |
+| R13 | Clock discontinuities invalidate timebase alignments | A witness mapped across a jump is misplaced by the jump | Fixed with alignment **epochs**: after a jump, no cross-clock witness is fresh, whatever `max_age`, until a requalified epoch (`valid_from_ns`) is declared. A bench re-alignment procedure is still needed |
+| R14 | Pilot extractor ignores selector settling | Valid only if selector transients don't couple into the pilot path (pilot injected downstream at P3) | Bench check of the selector → pilot coupling. Synthetic cross-fade leakage is about 0.013 rad max, 20× below the floor |
+| R15 | Scene transients splatter into the pilot band | A scene step 20 dB above the pilot distorts the pilot estimate of that block | Quantified in `sim/leakage.py`. Consider pilot level, block length and window choice in Sprint 1e |
+| R16 | Unintended leakage channels | The detector's scene leakage breaks some structural circuits | Any estimator that uses it must declare it. `leakage_breaks()` lists the affected circuits |
 
 ## 5. Preliminary sprint breakdown
 
@@ -116,8 +128,9 @@ qualification-record verifier exists.
 | **0 (this change)** | P0.2 observation graph + matrix. P0.3 contract, validator, ingestion, truth isolation. P0.8 four-state adapter. Monitor evidence record | Team review of planes, contract and risks | No |
 | 0 (open) | P0.1 import historical releases into a dedicated repo with tags and archive hashes (see `PROVENANCE.md`). P0.4 vendor gate | Historical tests pass unmodified in CI | P0.4 only |
 | **1a (done)** | Blind disturbance generator, matched-observation pairs per configuration, blindness controls ([`BLIND_GENERATOR.md`](BLIND_GENERATOR.md)) | Reproducible, contract-valid, causal captures. Negative controls show physically different disturbances are observationally equivalent | No |
-| 1b | P0.5 sampled pilot extractor: raw IQ → `PilotObservation` with latency, unwrap continuity and gap handling | Known synthetic steps recovered inside the stated coverage. Leakage and clipping tests | No |
-| 1c | P0.6 analog quadrature model: detector bandwidth, impulse response, dead time, tap at P4, **own reference drift M**. Front-end anti-alias model (R11) | Shows the detector misses A-side events and out-of-band glitches. Renders C3/C3s matched pairs | No |
+| **1b (done)** | Sampled pilot extractor: raw IQ → `PilotObservation` with frequency compensation, latency, unwrap continuity and gap handling ([`MONITORS.md`](MONITORS.md)) | Every row of the 1b–1c acceptance table has a test | No |
+| **1c (done)** | Analog quadrature model: bandwidth, two-section response, detector noise, saturation, logger dead time, tap at P4, own drift M, independent vs source reference (rendered as C6/C6s) | Misses A-side events, attenuates sub-µs glitches, preserves M ambiguity | No |
+| 1c (open) | Front-end anti-alias model (R11) | Revisit the intersample-glitch results | No |
 | 1d | P0.7 attribution guard + window policy on `OnlineCapture` + records → public state | Matched-observable negative controls give the same online state | No |
 | 1e | Offline scorer: detection vs. attribution, false alarms per exposure minute, latency, missed events, trial-cluster bootstrap CIs | Uses `open_for_scoring()` only after decisions are frozen | No |
 | 2 | P1.1–P1.4 instrumentation, conducted wiring review, blind controller, cost audit. B220mini adapter writing this contract | Gate 0 evidence package | **Yes**, plus procurement signoff |

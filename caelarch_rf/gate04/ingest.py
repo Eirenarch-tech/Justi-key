@@ -25,7 +25,7 @@ import stat
 import sys
 from dataclasses import dataclass, field
 from fractions import Fraction
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from . import contract as C
 
@@ -76,6 +76,16 @@ class Rejection:
     start: int  # first rejected sample index
     stop: int   # one past last rejected sample index
     reason: str
+
+
+@dataclass(frozen=True)
+class _Epoch:
+    src: str
+    dst: str
+    offset: int        # t_dst = t_src + offset
+    unc: int
+    start_dst: float   # epoch start on dst (-inf if not requalified)
+    end_dst: float     # first discontinuity on either clock, in dst terms
 
 
 @dataclass(frozen=True)
@@ -209,38 +219,59 @@ class OnlineCapture:
         self.streams = streams
         self.events = events
         self.witness = witness
-        self._align = {}
-        for a in manifest["timebase_alignments"]:
-            self._align[(a["from"], a["to"])] = (a["offset_ns"], a["uncertainty_ns"])
-            self._align[(a["to"], a["from"])] = (-a["offset_ns"], a["uncertainty_ns"])
-        # A declared alignment was measured against a continuous clock. From the
-        # first TIME_DISCONTINUITY on a timebase onward it is void (fail closed).
-        self._disc = {}
+        # TIME_DISCONTINUITY times per timebase (post-jump stamps).
+        self._disc: Dict[str, List[int]] = {}
         for ev in events:
             if ev["type"] == "TIME_DISCONTINUITY":
-                tb = streams[ev["stream_id"]].timebase
-                self._disc.setdefault(tb, ev["t_ns"])
+                self._disc.setdefault(streams[ev["stream_id"]].timebase, []).append(ev["t_ns"])
+        # Alignment epochs. A declared alignment was measured against continuous
+        # clocks: it holds from ``valid_from_ns`` (on its ``to`` timebase, default
+        # -inf) until the first discontinuity on EITHER clock after that. After a
+        # jump nothing maps across clocks until a requalified epoch is declared.
+        self._epochs: List[_Epoch] = []
+        for al in manifest["timebase_alignments"]:
+            start = al.get("valid_from_ns")
+            start = -math.inf if start is None else start
+            off = al["offset_ns"]
+            ends = [d for d in self._disc.get(al["to"], []) if d > start]
+            ends += [d + off for d in self._disc.get(al["from"], []) if d + off > start]
+            self._epochs.append(_Epoch(al["from"], al["to"], off, al["uncertainty_ns"],
+                                       start, min(ends, default=math.inf)))
 
     @property
     def synthetic(self):
         return self.manifest["provenance"]["kind"] == "synthetic"
 
     def has_alignment(self, src, dst) -> bool:
-        return src == dst or (src, dst) in self._align
+        return src == dst or any({e.src, e.dst} == {src, dst} for e in self._epochs)
+
+    def _epoch_for(self, t_ns, src, dst) -> Optional["_Epoch"]:
+        """The alignment epoch that certainly contains ``t_ns`` (on ``src``)."""
+        for e in self._epochs:
+            if (e.src, e.dst) == (src, dst):
+                t_dst, u = t_ns + e.offset, e.unc   # converted: widen by uncertainty
+            elif (e.src, e.dst) == (dst, src):
+                t_dst, u = t_ns, 0                  # already on the epoch's clock
+            else:
+                continue
+            if t_dst - u >= e.start_dst and t_dst + u < e.end_dst:
+                return e
+        return None
+
+    def _same_segment(self, tb, t_a, t_b) -> bool:
+        """No discontinuity on ``tb`` lies in (min, max] of the two times."""
+        lo, hi = min(t_a, t_b), max(t_a, t_b)
+        return not any(lo < d <= hi for d in self._disc.get(tb, []))
 
     def map_time(self, t_ns, src, dst) -> Optional[Tuple[int, int]]:
-        """(t on dst, uncertainty ns), or None when no declared alignment exists
-        or the alignment is void because either clock has jumped by then."""
+        """(t on dst, uncertainty ns), or None when no alignment epoch covers it
+        (none declared, or voided by a clock discontinuity and not requalified)."""
         if src == dst:
             return t_ns, 0
-        if (src, dst) not in self._align:
+        e = self._epoch_for(t_ns, src, dst)
+        if e is None:
             return None
-        if src in self._disc and t_ns >= self._disc[src]:
-            return None
-        off, unc = self._align[(src, dst)]
-        if dst in self._disc and t_ns + off - unc >= self._disc[dst]:
-            return None
-        return t_ns + off, unc
+        return (t_ns + e.offset, e.unc) if e.src == src else (t_ns - e.offset, e.unc)
 
     def events_until(self, t_ns, timebase):
         """Events that had certainly occurred by ``t_ns`` on ``timebase``.
@@ -256,28 +287,52 @@ class OnlineCapture:
         return out
 
     def latest_witness(self, t_ns, timebase, max_age_ns) -> WitnessLookup:
-        """Most recent *valid* witness record usable at decision time ``t_ns``."""
+        """Most recent *valid* witness record usable at decision time ``t_ns``.
+
+        The record and the decision must lie in the SAME alignment epoch (or
+        the same clock segment, for a same-timebase witness): a witness from
+        before a clock jump is never fresh after it, however generous
+        ``max_age_ns`` is, until a requalified alignment epoch is declared.
+        """
         if not self.witness:
             return WitnessLookup(None, None, "NO_WITNESS_FILE")
-        best, unaligned, void = None, False, False
-        for rec in self.witness:
-            m = self.map_time(rec["t_ns"], rec["timebase"], timebase)
-            if m is None:
-                if self.has_alignment(rec["timebase"], timebase):
-                    void = True
-                else:
-                    unaligned = True
-                continue
-            t_w, unc = m
-            if not rec["valid"] or t_w + unc > t_ns:
-                continue  # invalid, or not certainly in the past
-            age = t_ns - (t_w - unc)
-            if best is None or age < best[1]:
-                best = (rec, age)
+        wtbs = {r["timebase"] for r in self.witness}
+        best, reasons = None, set()
+        for wtb in wtbs:
+            if wtb == timebase:
+                def ok(r):
+                    return self._same_segment(timebase, r["t_ns"], t_ns)
+
+                def to_dec(r):
+                    return r["t_ns"], 0
+            else:
+                if not self.has_alignment(wtb, timebase):
+                    reasons.add("NO_TIMEBASE_ALIGNMENT")
+                    continue
+                e = self._epoch_for(t_ns, timebase, wtb)
+                if e is None:
+                    reasons.add("ALIGNMENT_VOID_AFTER_DISCONTINUITY")
+                    continue
+
+                def ok(r, e=e, wtb=wtb):
+                    return self._epoch_for(r["t_ns"], wtb, timebase) is e
+
+                def to_dec(r, wtb=wtb):
+                    return self.map_time(r["t_ns"], wtb, timebase)
+            for rec in self.witness:
+                if rec["timebase"] != wtb or not rec["valid"] or not ok(rec):
+                    continue
+                t_w, unc = to_dec(rec)
+                if t_w + unc > t_ns:
+                    continue  # not certainly in the past
+                age = t_ns - (t_w - unc)
+                if best is None or age < best[1]:
+                    best = (rec, age)
         if best is None:
-            reason = ("NO_TIMEBASE_ALIGNMENT" if unaligned else
-                      "ALIGNMENT_VOID_AFTER_DISCONTINUITY" if void else "NO_VALID_PRIOR_WITNESS")
-            return WitnessLookup(None, None, reason)
+            for r in ("NO_TIMEBASE_ALIGNMENT", "ALIGNMENT_VOID_AFTER_DISCONTINUITY"):
+                if r in reasons:
+                    return WitnessLookup(None, None, r)
+            return WitnessLookup(None, None, "NO_VALID_PRIOR_WITNESS")
         if best[1] > max_age_ns:
             return WitnessLookup(best[0], best[1], "STALE")
         return WitnessLookup(best[0], best[1], "OK")
@@ -396,7 +451,11 @@ def _derive(cap: OnlineCapture, sv: StreamView):
         return None
 
     lo_unlocked_from = None
-    ref_unlocked_from = None if cap.manifest["clock"]["ref_locked_at_start"] else 0
+    # The manifest clock block describes the SDR reference; it does not apply
+    # to streams logged on another device's timebase.
+    sdr_tb = {tb["id"] for tb in cap.manifest["timebases"] if tb["kind"] == "sdr_device"}
+    ref_unlocked_from = (None if cap.manifest["clock"]["ref_locked_at_start"]
+                         or sv.timebase not in sdr_tb else 0)
     pilot_off_from = None
     for ev in cap.events:
         if not applies(ev):
@@ -435,6 +494,8 @@ def _derive(cap: OnlineCapture, sv: StreamView):
                     sv.rejections.append(Rejection(lo_unlocked_from, start, "LO_UNLOCKED"))
                     lo_unlocked_from = None
         elif typ == "REF_LOCK":
+            if ev["timebase"] != sv.timebase:
+                continue  # lock state of another device's reference
             idx = _place(cap, sv, ev, "start")
             if idx is None:
                 # Cannot order a lock-state change against this stream: fail closed.
@@ -446,7 +507,7 @@ def _derive(cap: OnlineCapture, sv: StreamView):
                 stop = _place(cap, sv, {**ev, "t_ns": ev["t_ns"]}, "end")
                 sv.rejections.append(Rejection(ref_unlocked_from, stop, "REF_UNLOCKED"))
                 ref_unlocked_from = None
-        elif typ == "PILOT_STATE" and "pilot" in sv.meta["carries"]:
+        elif typ == "PILOT_STATE" and set(sv.meta["carries"]) & {"pilot", "analog_monitor"}:
             idx = _place(cap, sv, ev, "start")
             if idx is None:
                 sv.pilot_off.append((0, sv.n))

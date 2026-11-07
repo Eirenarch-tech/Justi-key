@@ -26,7 +26,8 @@ def emittable_circuits(config) -> List[frozenset]:
     if config not in EMITTED:
         raise ValueError(f"{config} is not renderable yet")
     sensors = CONFIGS[config][0]
-    return [c for c in circuits(sensors) if len(c) > 1 and "M" not in c]
+    renders_m = EMITTED[config].analog is not None
+    return [c for c in circuits(sensors) if len(c) > 1 and (renders_m or "M" not in c)]
 
 
 def split_vector(config, circuit) -> Tuple[Dict[str, float], Dict[str, float]]:
@@ -53,19 +54,30 @@ def matched_pair(base: Scenario, circuit, template: Disturbance) -> Tuple[Scenar
 def online_difference(dir_a, dir_b) -> Dict[str, object]:
     """Compare two captures exactly as an online method would see them.
 
-    Returns the max |I/Q| difference in LSB, whether events, witness timing and
-    the manifest (ignoring per-capture hashes, id and truth commitment) agree,
-    and the max witness ratio difference.
+    Returns the max |I/Q| difference in LSB, whether events and witness timing
+    agree, the max witness ratio difference, and ``manifest_equal_normalized``:
+    whether the manifests agree AFTER removing capture_id, truth_commitment and
+    content hashes. That is normalized operating-metadata equivalence, NOT
+    byte-for-byte manifest identity (complete manifests always differ in those
+    fields, by design).
     """
     ca, cb = load_capture(dir_a), load_capture(dir_b)
-    out = {}
+    out = {"max_abs_diff": {}}
+    # Per-format tolerance for "identical up to rounding": 1 LSB for int16; for
+    # float32 detector output, well below one int16-equivalent step of full scale.
+    tol = {"sc16_le": 1.0, "fc32_le": 1e-5}
+    within = True
     for sid, sa in ca.streams.items():
         sb = cb.streams[sid]
         if sa.n != sb.n:
-            out["max_iq_lsb"] = float("inf")
-            break
-        xa, xb = sa.read_iq(0, sa.n), sb.read_iq(0, sb.n)
-        out["max_iq_lsb"] = max(max(abs(p.real - q.real), abs(p.imag - q.imag)) for p, q in zip(xa, xb))
+            d = float("inf")
+        else:
+            xa, xb = sa.read_iq(0, sa.n), sb.read_iq(0, sb.n)
+            d = max(max(abs(p.real - q.real), abs(p.imag - q.imag)) for p, q in zip(xa, xb))
+        out["max_abs_diff"][sid] = d
+        within = within and d <= tol[sa.meta["format"]]
+    out["max_iq_lsb"] = out["max_abs_diff"].get("rx0", 0.0)   # the SDR stream, int16 LSB
+    out["streams_within_rounding"] = within
     out["events_equal"] = ca.events == cb.events
 
     def timing(w):
@@ -79,7 +91,7 @@ def online_difference(dir_a, dir_b) -> Dict[str, object]:
              if k not in ("capture_id", "truth_commitment", "events_sha256", "witness_sha256")}
         m["streams"] = [{k: v for k, v in s.items() if k != "sha256"} for s in m["streams"]]
         return m
-    out["manifest_equal"] = strip(ca.manifest) == strip(cb.manifest)
-    out["equivalent"] = (out["max_iq_lsb"] <= 1 and out["events_equal"] and out["witness_timing_equal"]
-                         and out["witness_max_abs"] <= 1e-9 and out["manifest_equal"])
+    out["manifest_equal_normalized"] = strip(ca.manifest) == strip(cb.manifest)
+    out["equivalent"] = (within and out["events_equal"] and out["witness_timing_equal"]
+                         and out["witness_max_abs"] <= 1e-9 and out["manifest_equal_normalized"])
     return out

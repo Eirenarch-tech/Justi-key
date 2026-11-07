@@ -144,7 +144,7 @@ def _obs(**kw):
     base = dict(stream_id="rx0", monitor_kind="sampled_digital", timebase="sdr0",
                 window_start_ns=0, window_end_ns=1000, available_ns=1500, offset_hz=1e5,
                 phase_rad=0.1, unwrapped_phase_rad=0.1, phase_std_rad=0.01, snr_db=20.0,
-                clipped=False, gap_in_window=False, pilot_enabled=True)
+                clipped=False, gap_in_window=False, pilot_enabled=True, continuity_id=0)
     base.update(kw)
     return PilotObservation(**base)
 
@@ -173,7 +173,8 @@ class TestRecords(unittest.TestCase):
 
 
 class TestIsolation(unittest.TestCase):
-    ONLINE = ("contract.py", "ingest.py", "records.py", "states.py", "observability.py", "validate.py")
+    ONLINE = ("contract.py", "ingest.py", "records.py", "states.py", "observability.py", "validate.py",
+              "monitors.py")
 
     def test_online_modules_never_import_sealed_truth(self):
         for name in self.ONLINE:

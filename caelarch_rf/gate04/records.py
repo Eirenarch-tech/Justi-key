@@ -42,6 +42,12 @@ class PilotObservation:
     gap_in_window: bool       # overflow/discontinuity/settling inside window
     pilot_enabled: bool       # PILOT_STATE at window time
     detector_bandwidth_hz: Optional[float] = None  # analog: measured -3 dB BW
+    # Unwrapped phase is meaningful only within one continuity segment. A new
+    # id starts after ANY unobserved interval or ambiguous (> limit) change, so
+    # no consumer can mistake two segments for one continuous track.
+    continuity_id: Optional[int] = None
+    freq_offset_hz: Optional[float] = None   # tracked residual pilot frequency
+    innovation_rad: Optional[float] = None   # phase minus causal prediction
 
     def __post_init__(self):
         if self.monitor_kind not in MONITOR_KINDS:
@@ -53,12 +59,14 @@ class PilotObservation:
             raise ValueError("require window_start <= window_end <= available (no acausal estimates)")
         _finite("offset_hz", self.offset_hz)
         for n in ("phase_rad", "unwrapped_phase_rad", "phase_std_rad", "snr_db",
-                  "detector_bandwidth_hz"):
+                  "detector_bandwidth_hz", "freq_offset_hz", "innovation_rad"):
             _finite(n, getattr(self, n), allow_none=True)
         if self.phase_rad is not None and abs(self.phase_rad) > math.pi + 1e-12:
             raise ValueError("phase_rad must be wrapped to [-pi, pi]")
         if self.monitor_kind == "analog_quadrature" and self.detector_bandwidth_hz is None:
             raise ValueError("analog monitor records must state detector_bandwidth_hz")
+        if self.unwrapped_phase_rad is not None and self.continuity_id is None:
+            raise ValueError("an unwrapped phase must name its continuity segment")
 
     @property
     def usable(self) -> bool:

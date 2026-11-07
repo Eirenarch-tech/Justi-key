@@ -15,7 +15,8 @@ from functools import lru_cache
 
 from caelarch_rf.gate04.observability import ORDER
 
-KINDS = ("step", "ramp", "pulse", "sine", "random_walk", "delay_step", "intersample_pulse")
+KINDS = ("step", "ramp", "pulse", "sine", "random_walk", "delay_step", "freq_offset",
+         "intersample_pulse")
 WALK_GRID_NS = 10_000  # random-walk evaluation grid (10 us), held between points
 
 
@@ -35,7 +36,8 @@ class Disturbance:
     kind: str              # KINDS
     t0_ns: int             # physical onset, ns since capture start
     value: float           # rad (step/ramp total/pulse/sine amplitude);
-                           # rad/sqrt(s) (random_walk); ns of group delay (delay_step)
+                           # rad/sqrt(s) (random_walk); ns of group delay (delay_step);
+                           # Hz (freq_offset: unbounded phase ramp 2*pi*value*t)
     duration_ns: int = 0   # ramp/pulse/random_walk length; sine length (0 = to end)
     freq_hz: float = 0.0   # sine only
     seed: int = 0          # random_walk only
@@ -79,6 +81,8 @@ class Disturbance:
             return self.value * math.sqrt(WALK_GRID_NS * 1e-9) * w[min(int(dt // WALK_GRID_NS), n)]
         if k == "delay_step":
             return -2 * math.pi * f_hz * self.value * 1e-9
+        if k == "freq_offset":
+            return 2 * math.pi * self.value * dt * 1e-9
         raise AssertionError("intersample_pulse must be resolved by the generator")
 
     def to_truth(self) -> dict:

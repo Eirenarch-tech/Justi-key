@@ -33,14 +33,17 @@ point sampling**:
 | pilot | `S + J + G + A + FG + FA` | −20 dB below the scene by default. Only C2 has one |
 | witness | `R + K` on its own timebase `wit0` | Records about every 1 ms with jitter. C1 and C2 only |
 
-* **Every graph term except `M`** can be disturbed, in these shapes: `step`,
-  `ramp`, `pulse`, `sine`, `random_walk`, `delay_step`, `intersample_pulse`.
-  `M` is only seen by the analog monitor, which arrives in Sprint 1c.
+* **Every graph term** can be disturbed, in these shapes: `step`, `ramp`,
+  `pulse`, `sine`, `random_walk`, `delay_step`, `freq_offset`,
+  `intersample_pulse`. `M` only in the analog configurations C6/C6s (Sprint
+  1c, see [`MONITORS.md`](MONITORS.md)).
 * **Frequency-dependent impairments:** `FG`/`FA` steps, and `delay_step` on G
   (evaluated at RF frequency) or A (evaluated at baseband frequency). A
   delay step moves the scene and the pilot by different amounts.
-* **Background:** random-walk phase noise on A (LO) and S (unlocked pilot
-  source), recorded in truth.
+* **Background:** random-walk phase noise on A (LO, 1 rad/√s) and S
+  (unlocked pilot source, 2 rad/√s), a pilot-source frequency offset (up to
+  ±300 Hz), and M drift in the analog configs. All illustrative and all
+  recorded in truth.
 * **Timing:** sample-clock error (±2 ppm), random device-time origin, witness
   timebase offset, and a declared alignment error inside the declared
   uncertainty. Events are scheduled in physical time and stamped through the
@@ -74,7 +77,11 @@ same trajectory shape on disjoint physical causes) with the same seed must
 give captures that match within 1 LSB for an online method. The tests check:
 
 * every circuit of C0 (6), C1 (6) and C2 (24) gives equivalent captures, for
-  step, ramp and pulse shapes;
+  step, ramp and pulse shapes. In C6 (27) and C6s (28), the circuits that
+  scene leakage into the P4 detector does not break (17 and 19) are
+  equivalent. The leakage-broken ones (10 and 9) differ **only** in the
+  detector stream and become equivalent with the scene removed (see
+  `MONITORS.md`);
 * each pair built for a sparser configuration becomes **distinguishable**
   when rendered in a richer configuration where it is no longer a circuit.
   For example, `{X,G}` is equivalent in C0 and C1 and separates in C2. In C2,
@@ -83,16 +90,26 @@ give captures that match within 1 LSB for an online method. The tests check:
   (single-pilot frequency ambiguity);
 * an intersample glitch is invisible, while an in-band glitch is not.
 
-The analog-monitor configurations (C3, C3s, C5) are covered at the structural
-level only, until Sprint 1c renders the monitor and its own drift `M`.
+C3, C3s and C5 (analog monitor without a sampled pilot, or with the
+pilot-path monitor) remain structural-only. The renderable analog
+configurations are C6 and C6s.
+
+**Comparator semantics.** `online_difference()` reports per-stream maximum
+differences with format-appropriate tolerances: 1 LSB for int16, 1e-5 full
+scale for float32. An earlier version kept only the last stream's value and
+applied an int16 tolerance to float data, which hid analog-only differences.
+`manifest_equal_normalized` compares manifests **after removing**
+`capture_id`, `truth_commitment` and content hashes. That is
+normalized operating-metadata equivalence, **not** byte-for-byte identity:
+complete manifests of two captures always differ in those fields.
 
 ## Blindness beyond import isolation (refinement 3)
 
 | Channel | Rule | Test |
 |---|---|---|
-| Seeds | ≥128-bit bytes or hex. Integers refused, because a small seed space lets an online method regenerate noise and match | `test_enumerable_seeds_refused` |
+| Seeds | At least 16 bytes of seed material (bytes or hex). Integers refused, because a small seed space lets an online method regenerate noise and match. **The code checks length, not entropy** (16 zero bytes pass): production blind batches must use a CSPRNG seed (`secrets.token_hex(32)`, as the batch CLI does) | `test_enumerable_seeds_refused` |
 | Seed in capture | Never. The seed is stored only in truth | Batch scan for the seed hex |
-| Sub-streams | `ops`, `ops_fault/i`, `hidden_fault/i`, `background`, `noise`, `witness_noise` and `disturbance` are derived independently with SHA-256. The operating schedule never reads disturbances | Events, witness timing and manifest are byte-identical across different disturbance schedules |
+| Sub-streams | `ops`, `ops_monitor`, `ops_fault/i`, `hidden_fault/i`, `background`, `noise`, `analog_noise`, `witness_noise` and `disturbance` are derived independently with SHA-256. The operating schedule never reads disturbances | `events.jsonl` is byte-identical, and witness timing and the *normalized* manifest are equal, across different disturbance schedules |
 | Names and parameters | Capture ids are keyed hashes. File names are fixed. The contract allowlist admits no free text | Batch scan for case names, kinds and timebase names |
 | Timing patterns | Case templates receive only `(rng, duration, fs)`. Onsets are uniform over the capture, drawn independently of switch times | Template signature test |
 | Metadata | `created_utc` and all file mtimes are fixed constants | Batch mtime and created-time check |

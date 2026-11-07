@@ -72,6 +72,9 @@ LIBRARY: Dict[str, Template] = {
     "H_plus_G": _both("H", "G"),
     "H_plus_J": _both("H", "J"),
     "G_plus_J_cancel": _cancel,
+    "M_step": _step("M"),
+    "M_random_walk": lambda r, d, fs: ((Disturbance("M", "random_walk", _t(r, d) // 2, r.uniform(5, 20),
+                                                    d // 3, seed=r.getrandbits(64)),), ()),
     "G_delay_selective": lambda r, d, fs: ((Disturbance("G", "delay_step", _t(r, d), r.uniform(0.2, 2.0)),), ()),
     "A_delay_selective": lambda r, d, fs: ((Disturbance("A", "delay_step", _t(r, d), r.uniform(0.2, 2.0)),), ()),
     **{f"fault_{k}": _fault(k) for k in ("retune", "retune_unlocked", "gain_change", "ref_unlock",
@@ -81,9 +84,11 @@ LIBRARY: Dict[str, Template] = {
 
 
 def cases_for(config) -> List[str]:
-    pilot, witness = EMITTED[config]
+    pilot, witness, analog = EMITTED[config]
     out = []
     for name in LIBRARY:
+        if not analog and name.startswith("M_"):
+            continue
         if not pilot and name in ("fault_pilot_off",):
             continue
         if not witness and name == "fault_witness_invalid":

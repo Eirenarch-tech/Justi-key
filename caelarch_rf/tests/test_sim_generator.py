@@ -13,7 +13,7 @@ from dataclasses import replace
 from caelarch_rf.gate04 import contract as C
 from caelarch_rf.gate04 import sealed_truth
 from caelarch_rf.gate04.ingest import load_capture
-from caelarch_rf.gate04.observability import CONFIGS, ORDER, SENSORS, circuits
+from caelarch_rf.gate04.observability import CONFIGS, ORDER, SENSORS, circuits, leakage_breaks
 from caelarch_rf.sim import batch, generator as G
 from caelarch_rf.sim.disturbances import Disturbance
 from caelarch_rf.sim.generator import AcqFault, Scenario, generate, simulate
@@ -87,7 +87,7 @@ class TestContractAndCausality(Tmp):
     def test_every_fault_and_config_validates(self):
         for config in G.EMITTED:
             for kind in G.FAULT_KINDS:
-                pilot, wit = G.EMITTED[config]
+                pilot, wit, _ = G.EMITTED[config]
                 if (kind == "pilot_off" and not pilot) or (kind == "witness_invalid" and not wit):
                     continue
                 with self.subTest(config=config, kind=kind):
@@ -162,14 +162,9 @@ class TestContractAndCausality(Tmp):
         cap, truth, sim = self._fault("time_discontinuity")
         note = truth["generator"]["acquisition_faults"][0]
         disc_t = next(e["t_ns"] for e in cap.events if e["type"] == "TIME_DISCONTINUITY")
-        before = cap.latest_witness(disc_t - 1, "sdr0", 10 ** 9)
-        after = cap.latest_witness(disc_t + 5_000_000, "sdr0", 10 ** 9)
-        self.assertEqual(before.reason, "OK")
-        # The newest witness records post-date the jump and are not mappable; the
-        # result is either an older record or a void-alignment refusal, never a
-        # record mapped across the jump.
-        if after.record is not None:
-            self.assertLess(cap.map_time(after.record["t_ns"], "wit0", "sdr0")[0], disc_t)
+        self.assertEqual(cap.latest_witness(disc_t - 1, "sdr0", 10 ** 9).reason, "OK")
+        after = cap.latest_witness(disc_t + 5_000_000, "sdr0", 10 ** 15)
+        self.assertEqual((after.record, after.reason), (None, "ALIGNMENT_VOID_AFTER_DISCONTINUITY"))
         self.assertGreater(note["jump_ns"], cap.manifest["timebase_alignments"][0]["uncertainty_ns"])
 
     def test_overload_clips_and_retune_and_pilot_gating_visible(self):
@@ -225,11 +220,26 @@ class TestMatchedObservations(Tmp):
         return online_difference(ca, cb)
 
     def test_every_circuit_of_every_emittable_config_is_observationally_equivalent(self):
+        broken = 0
         for config in G.EMITTED:
+            sensors = CONFIGS[config][0]
             for circ in emittable_circuits(config):
                 with self.subTest(config=config, circuit=sorted(circ)):
                     diff = self._pair(config, circ)
-                    self.assertTrue(diff["equivalent"], diff)
+                    if not leakage_breaks(sensors, circ):
+                        self.assertTrue(diff["equivalent"], diff)
+                        continue
+                    # Scene leakage into the P4 detector (unmodelled in the static
+                    # graph) separates the pair, ONLY in the detector stream...
+                    broken += 1
+                    self.assertFalse(diff["equivalent"])
+                    self.assertLessEqual(diff["max_iq_lsb"], 1)
+                    self.assertTrue(diff["events_equal"] and diff["witness_max_abs"] <= 1e-9)
+                    # ...and with the scene removed the pair is equivalent again.
+                    off = self._pair(config, circ, base=Scenario(config=config, duration_ns=SHORT,
+                                                                  scene_on=False))
+                    self.assertTrue(off["equivalent"], off)
+        self.assertGreater(broken, 0)
 
     def test_pairs_separate_once_a_sensor_breaks_the_circuit(self):
         order = list(G.EMITTED)
@@ -246,7 +256,8 @@ class TestMatchedObservations(Tmp):
                     diff = online_difference(ca, cb)
                     with self.subTest(built_for=config, rendered_as=richer, circuit=sorted(circ)):
                         self.assertFalse(diff["equivalent"])
-                        self.assertTrue(diff["max_iq_lsb"] > 20 or diff["witness_max_abs"] > 0.05, diff)
+                        self.assertTrue(diff["max_iq_lsb"] > 20 or diff["witness_max_abs"] > 0.05
+                                        or diff["max_abs_diff"].get("mon0", 0.0) > 0.01, diff)
                     checked += 1
         self.assertGreater(checked, 0)
 
@@ -303,7 +314,7 @@ class TestBlindness(Tmp):
         b, _ = self.gen(replace(base, disturbances=(Disturbance("G", "pulse", 1_000_000, 1.0, 300_000),
                                                     Disturbance("R", "step", 4_000_000, -0.4))))
         diff = online_difference(a, b)
-        self.assertTrue(diff["events_equal"] and diff["witness_timing_equal"] and diff["manifest_equal"])
+        self.assertTrue(diff["events_equal"] and diff["witness_timing_equal"] and diff["manifest_equal_normalized"])
         self.assertFalse(diff["equivalent"])  # the physics differs, as it should
         with open(os.path.join(a, "events.jsonl"), "rb") as f1, open(os.path.join(b, "events.jsonl"), "rb") as f2:
             self.assertEqual(f1.read(), f2.read())

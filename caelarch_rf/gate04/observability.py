@@ -94,7 +94,35 @@ SENSORS: Dict[str, Sensor] = {s.name: s for s in [
     _s("pilot_path_monitor", {"S": 1, "J": 1}, "PS -> J (independent coupler/detector)",
        "Independent observation of source+injection; does not exist yet",
        hypothetical=True),
+    # UNINTENDED channels found by rendering (Sprint 1c): the P4 detector also
+    # receives the scene tone, attenuated by its filter, so it is a weak scene
+    # sensor. Not part of any configuration; listed so the circuits it breaks
+    # are explicit. H- and R-port versions follow the selector.
+    _s("leak_analog_H", {"X": 1, "H": 1, "G": 1, "M": -1}, "P4 detector, scene leakage (selector on H)",
+       "Unintended; strongly attenuated by the detector filter and block averaging", hypothetical=True),
+    _s("leak_analog_R", {"X": 1, "R": 1, "G": 1, "M": -1}, "P4 detector, scene leakage (selector on R)",
+       "Unintended; strongly attenuated by the detector filter and block averaging", hypothetical=True),
+    _s("leak_analog_srcref_H", {"X": 1, "H": 1, "G": 1, "S": -1, "M": -1},
+       "Source-referenced P4 detector, scene leakage (selector on H)",
+       "Unintended; S enters through the source-derived reference", hypothetical=True),
+    _s("leak_analog_srcref_R", {"X": 1, "R": 1, "G": 1, "S": -1, "M": -1},
+       "Source-referenced P4 detector, scene leakage (selector on R)",
+       "Unintended; S enters through the source-derived reference", hypothetical=True),
 ]}
+LEAKAGE_SENSORS = {"analog_monitor_P4": ("leak_analog_H", "leak_analog_R"),
+                   "analog_monitor_P4_srcref": ("leak_analog_srcref_H", "leak_analog_srcref_R")}
+
+
+def leakage_breaks(sensors, circuit) -> bool:
+    """True if the circuit's null vector moves an unintended leakage channel of a
+    detector in ``sensors``: the pair is then NOT information-theoretically
+    indistinguishable, only (perhaps) to monitors that ignore the leakage."""
+    v = circuit_vector(sensors, circuit)
+    for s in sensors:
+        for leak in LEAKAGE_SENSORS.get(s, ()):
+            if any(abs(x) > 1e-12 for x in observe((leak,), v).values()):
+                return True
+    return False
 
 # Qualified physical bounds act as pseudo-observations that pin a term (or a
 # sum of terms). Each maps to a qualification requirement a signed physical
@@ -112,7 +140,9 @@ REQUIREMENTS: Dict[str, Tuple[str, str]] = {
     "K_qualified": ("QR-K", "Witness differential transfer K characterised at the P0/P1 planes, "
                             "with drift bound over the capture"),
     "X_bounded": ("QR-X", "Known RF source phase X bounded (or independently monitored) over every "
-                          "bracket span; required by finding R1"),
+                          "bracket span (finding R1). Makes U=AG estimable only AT reference "
+                          "observation instants; it does NOT make U excursions between references "
+                          "observable, so the Gate 0.3 inter-reference gap stays open"),
     "SJ_bounded": ("QR-SJ", "Joint pilot source + injection path drift S+J bounded"),
     "J_bounded": ("QR-J", "Injection path J drift bounded on its own (source-referenced detector)"),
     "F_bounded": ("QR-F", "Pilot-vs-scene transfer equivalence: FG and FA each bounded across the "
@@ -139,6 +169,15 @@ CONFIGS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...], str]] = {
     "C5_all": (("scene", "reference", "witness", "pilot_sampled", "analog_monitor_P4",
                 "pilot_path_monitor"), ("K_qualified", "X_bounded", "F_bounded", "M_bounded"),
                "Every candidate sensor (independent-reference detector)"),
+    # Rendered by the Sprint 1c generator: the injected pilot reaches the SDR as
+    # well as the P4 detector, so the sampled pilot is always available too.
+    "C6_pilot_analog": (("scene", "reference", "witness", "pilot_sampled", "analog_monitor_P4"),
+                        ("K_qualified", "X_bounded", "SJ_bounded", "F_bounded", "M_bounded"),
+                        "Sampled pilot + P4 detector, independent reference"),
+    "C6s_pilot_analog_srcref": (("scene", "reference", "witness", "pilot_sampled",
+                                 "analog_monitor_P4_srcref"),
+                                ("K_qualified", "X_bounded", "J_bounded", "F_bounded", "M_bounded"),
+                                "Sampled pilot + P4 detector referenced to the pilot source"),
 }
 
 FUNCTIONALS: Dict[str, Dict[str, int]] = {
@@ -356,6 +395,13 @@ def render_markdown() -> str:
     L.append("| Id | Assumption | Requirement |\n|---|---|---|")
     for a, (qid, text) in REQUIREMENTS.items():
         L.append(f"| **{qid}** | `{a}` | {text} |")
+    L.append("\n**Temporal scope.** `attrib`/`cond` mean estimable *at the instants the "
+             "contributing sensors observe*. Scene and reference are time-multiplexed, so any "
+             "estimate that needs the reference exists only during reference dwells. In "
+             "particular {QR-K, QR-X} makes `U=AG` estimable at reference instants only: a "
+             "stable source does **not** close the Gate 0.3 inter-reference observability gap. "
+             "Excursions between references are visible only to a continuously observing "
+             "sensor (sampled pilot, analog detector), and only inside its coverage envelope.")
     L.append("\nMinimal requirement sets per configuration: each alternative (separated by "
              "*or*) is a smallest set of QRs that makes the quantity estimable. A quantity "
              "absent from a row stays confounded under every candidate assumption.\n")
@@ -383,6 +429,19 @@ def render_markdown() -> str:
             (c for c in circuits(sensors) if len(c) > 1),
             key=lambda c: (len(c), sorted(ORDER.index(x) for x in c)))]
         L.append(f"- **{name}** ({desc}): " + (", ".join(f"`{x}`" for x in sets) or "none"))
+    L.append("\n## Circuits broken by unintended scene leakage into the P4 detector\n")
+    L.append("Found by rendering (Sprint 1c): the detector also receives the scene tone, attenuated "
+             "by its filter, so it weakly observes `X+H/R+G-M` (and `-S` when source-referenced). "
+             "These circuits remain indistinguishable to the current monitors (the leakage is far "
+             "below their detection floor after block averaging), but NOT information-"
+             "theoretically: an estimator that exploited the leakage could separate them.\n")
+    for name, (sensors, _, _) in CONFIGS.items():
+        if not any(s in LEAKAGE_SENSORS for s in sensors):
+            continue
+        broken = [_fmt_set(c) for c in sorted(
+            (c for c in circuits(sensors) if len(c) > 1 and leakage_breaks(sensors, c)),
+            key=lambda c: (len(c), sorted(ORDER.index(x) for x in c)))]
+        L.append(f"- **{name}**: " + (", ".join(f"`{x}`" for x in broken) or "none"))
     L.append("\n## Temporal coverage (qualitative; not in the rank analysis)\n")
     L.append("| Sensor | Coverage |\n|---|---|")
     for s in SENSORS.values():
