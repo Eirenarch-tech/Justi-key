@@ -39,6 +39,13 @@ therefore cannot sit next to the data "for convenience".
   the conservative direction.
 * A shared 10 MHz/PPS is *not* an alignment by itself. Someone has to measure
   the offset and declare it with a method and an uncertainty.
+* A declared alignment is **void from the first `TIME_DISCONTINUITY`** on
+  either of its timebases. A witness that would map across a clock jump is
+  not used. An event that can't be placed for that reason rejects the stream
+  from the discontinuity onward.
+* An event time inside an overflow dropout gap resolves to the gap's
+  boundary samples. A time in an untimed tail resolves to the tail's start.
+  Neither ever falls back to sample 0.
 
 ## 3. Manifest fields
 
@@ -50,7 +57,7 @@ therefore cannot sit next to the data "for convenience".
 | `clock` | `ref_source`, `pps_source`, `ref_locked_at_start` |
 | `timebases`, `timebase_alignments` | §2 |
 | `settling` | `switch_guard_ns`, `retune_guard_ns`, `gain_guard_ns`: minimum discard after each action |
-| `streams[]` | `stream_id`, `channel`, `file`, `sha256`, `format` (`sc16_le`/`fc32_le`, UHD interleaved), `sample_count`, `sample_rate_hz`, `center_freq_hz`, `rx_gain_db`, `timebase`, `t0_ns`, `clip_level`, `carries` ⊆ {scene, reference, pilot}, `pilot` {offset_hz, waveform_id} |
+| `streams[]` | `stream_id`, `channel`, `file`, `sha256`, `format` (`sc16_le`/`fc32_le`, UHD interleaved), `sample_count`, `sample_rate_hz`, `center_freq_hz`, `rx_gain_db`, `timebase`, `t0_ns`, `clip_level`, `carries` ⊆ {scene, reference, pilot}, `pilot` {offset_hz relative to the *initial* `center_freq_hz`; follow `LO_RETUNE` events, waveform_id} |
 | `events_file`/`events_sha256`, `witness_file`/`witness_sha256` | Sidecar files |
 | `qualification_ref` | {record_id, record_sha256} of a signed physical qualification record, or null. **Not verified by this package** |
 | `truth_commitment` | {scheme `sha256-salted-v1`, digest}, or null (null means the capture cannot be scored blind) |
@@ -92,8 +99,10 @@ port `UNKNOWN`. They must not be used as scene or reference.
 `ratio_im` (W1/W0), `phase_std_rad`, `valid`.
 `OnlineCapture.latest_witness(t, timebase, max_age_ns)` returns the newest
 valid record that was **certainly** in the past (`t_w + u ≤ t`). Its age is
-conservative (`t − (t_w − u)`). The result reason is one of `OK`, `STALE`,
-`NO_VALID_PRIOR_WITNESS`, `NO_TIMEBASE_ALIGNMENT`, `NO_WITNESS_FILE`. A witness
+conservative (`t − (t_w − u)`; across a positive clock jump it overstates the
+age by the jump). The result reason is one of `OK`, `STALE`,
+`NO_VALID_PRIOR_WITNESS`, `NO_TIMEBASE_ALIGNMENT`,
+`ALIGNMENT_VOID_AFTER_DISCONTINUITY`, `NO_WITNESS_FILE`. A witness
 without an alignment to the SDR timebase is never fresh.
 
 ## 6. Online evidence records (`gate04/records.py`)
@@ -109,7 +118,8 @@ bandwidth.
 
 * The truth file (`caelarch.sealed_truth/0.4`) holds a ≥32-byte random salt,
   the controller timebase and the perturbation list (`target` ∈ the observation-graph
-  impairment ids X, H, R, K, J, S, G, A, FG, FA, plus `t_ns`).
+  impairment ids X, H, R, K, J, S, G, A, FG, FA, M, plus `t_ns`), and
+  optionally a `generator` block (seed, clock model, fault notes).
 * The manifest holds only `sha256(truth file bytes)`. The salt keeps the digest
   from being an oracle: without it, an online method could hash candidate
   schedules ("G step 0.3 rad at 120 ms") and confirm a guess.

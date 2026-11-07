@@ -123,27 +123,36 @@ class StreamView:
         seg = max((s for s in self.segments if s[0] <= idx), key=lambda s: s[0])
         return seg[1] + (idx - seg[0]) * NS / self.fs
 
-    def index_at(self, t_ns, side="ceil") -> Optional[int]:
-        """First sample at/after (ceil) or last at/before (floor) ``t_ns``.
+    def timed_end(self):
+        """One past the last sample with a trustworthy timestamp."""
+        return self.untimed_from if self.untimed_from is not None else self.n
 
-        Returns None when ``t_ns`` falls in an untimed region or a dropout gap.
-        Values outside the capture are clamped to [0, n].
+    def index_at(self, t_ns, side="ceil") -> Optional[int]:
+        """First timed sample at/after (ceil) or last at/before (floor) ``t_ns``.
+
+        Times inside a dropout gap resolve to the gap's boundary samples.
+        Times at/after the end of the timed region resolve to ``timed_end()``
+        (ceil) or ``timed_end() - 1`` (floor): such samples, if any, are
+        untimed and already rejected. Only floor before the first sample
+        returns None.
         """
         t = Fraction(t_ns)
         segs = sorted(self.segments)
-        bounds = [s[0] for s in segs[1:]] + [self.untimed_from if self.untimed_from is not None else self.n]
-        if t < segs[0][1]:
-            return 0 if side == "ceil" else None
+        end = self.timed_end()
+        bounds = [s[0] for s in segs[1:]] + [end]
         for (i0, t0), i_end in zip(segs, bounds):
-            t_end = t0 + (i_end - i0) * NS / self.fs
-            if t0 <= t < t_end or (t == t_end and side == "floor"):
+            i_end = min(i_end, end)
+            if i_end <= i0:
+                continue
+            if t < t0:  # before this segment: in a gap, or before the capture
+                if side == "ceil":
+                    return i0
+                return i0 - 1 if i0 > 0 else None
+            t_last = t0 + (i_end - 1 - i0) * NS / self.fs
+            if t <= t_last:
                 x = i0 + (t - t0) * self.fs / NS
                 return math.ceil(x) if side == "ceil" else math.floor(x)
-        last_i0, last_t0 = segs[-1]
-        last_end = bounds[-1]
-        if self.untimed_from is None and t >= last_t0 + (last_end - last_i0) * NS / self.fs:
-            return self.n if side == "ceil" else self.n - 1
-        return None  # in a dropout gap or untimed tail
+        return end if side == "ceil" else end - 1
 
     def rejected_mask_ranges(self):
         """Merged rejected ranges, sorted."""
@@ -204,18 +213,33 @@ class OnlineCapture:
         for a in manifest["timebase_alignments"]:
             self._align[(a["from"], a["to"])] = (a["offset_ns"], a["uncertainty_ns"])
             self._align[(a["to"], a["from"])] = (-a["offset_ns"], a["uncertainty_ns"])
+        # A declared alignment was measured against a continuous clock. From the
+        # first TIME_DISCONTINUITY on a timebase onward it is void (fail closed).
+        self._disc = {}
+        for ev in events:
+            if ev["type"] == "TIME_DISCONTINUITY":
+                tb = streams[ev["stream_id"]].timebase
+                self._disc.setdefault(tb, ev["t_ns"])
 
     @property
     def synthetic(self):
         return self.manifest["provenance"]["kind"] == "synthetic"
 
+    def has_alignment(self, src, dst) -> bool:
+        return src == dst or (src, dst) in self._align
+
     def map_time(self, t_ns, src, dst) -> Optional[Tuple[int, int]]:
-        """(t on dst, uncertainty ns) or None when no declared alignment exists."""
+        """(t on dst, uncertainty ns), or None when no declared alignment exists
+        or the alignment is void because either clock has jumped by then."""
         if src == dst:
             return t_ns, 0
         if (src, dst) not in self._align:
             return None
+        if src in self._disc and t_ns >= self._disc[src]:
+            return None
         off, unc = self._align[(src, dst)]
+        if dst in self._disc and t_ns + off - unc >= self._disc[dst]:
+            return None
         return t_ns + off, unc
 
     def events_until(self, t_ns, timebase):
@@ -235,11 +259,14 @@ class OnlineCapture:
         """Most recent *valid* witness record usable at decision time ``t_ns``."""
         if not self.witness:
             return WitnessLookup(None, None, "NO_WITNESS_FILE")
-        best, unaligned = None, False
+        best, unaligned, void = None, False, False
         for rec in self.witness:
             m = self.map_time(rec["t_ns"], rec["timebase"], timebase)
             if m is None:
-                unaligned = True
+                if self.has_alignment(rec["timebase"], timebase):
+                    void = True
+                else:
+                    unaligned = True
                 continue
             t_w, unc = m
             if not rec["valid"] or t_w + unc > t_ns:
@@ -248,7 +275,9 @@ class OnlineCapture:
             if best is None or age < best[1]:
                 best = (rec, age)
         if best is None:
-            return WitnessLookup(None, None, "NO_TIMEBASE_ALIGNMENT" if unaligned else "NO_VALID_PRIOR_WITNESS")
+            reason = ("NO_TIMEBASE_ALIGNMENT" if unaligned else
+                      "ALIGNMENT_VOID_AFTER_DISCONTINUITY" if void else "NO_VALID_PRIOR_WITNESS")
+            return WitnessLookup(None, None, reason)
         if best[1] > max_age_ns:
             return WitnessLookup(best[0], best[1], "STALE")
         return WitnessLookup(best[0], best[1], "OK")
@@ -341,11 +370,7 @@ def _place(cap: OnlineCapture, sv: StreamView, ev, side):
         return None
     t, unc = m
     t_edge = t - unc if side == "start" else t + unc
-    idx = sv.index_at(t_edge, "ceil")
-    if idx is None:  # inside a dropout gap/untimed tail: be conservative
-        idx = sv.index_at(t_edge, "floor")
-        idx = 0 if idx is None else idx
-    return idx
+    return sv.index_at(t_edge, "ceil")
 
 
 def _derive(cap: OnlineCapture, sv: StreamView):
@@ -382,6 +407,13 @@ def _derive(cap: OnlineCapture, sv: StreamView):
             if typ == "SWITCH_COMMAND" and not set(sv.meta["carries"]) & {"scene", "reference"}:
                 continue
             start = _place(cap, sv, ev, "start")
+            if start is None and cap.has_alignment(ev["timebase"], sv.timebase):
+                # Alignment voided by a clock discontinuity: the event cannot be
+                # placed, so nothing from the discontinuity onward is trusted.
+                d = min((e["sample_index"] for e in cap.events if e["type"] == "TIME_DISCONTINUITY"
+                         and e["stream_id"] == sv.stream_id), default=0)
+                sv.rejections.append(Rejection(d, sv.n, "ALIGNMENT_VOID_AFTER_DISCONTINUITY"))
+                continue
             if start is None:
                 raise C.ContractError(
                     f"{typ} seq={ev['seq']} on timebase {ev['timebase']!r} cannot be placed on stream "
@@ -392,7 +424,6 @@ def _derive(cap: OnlineCapture, sv: StreamView):
             if s_t is not None:
                 end_t = max(end_t, s_t)  # device settling may extend, never shorten, the guard
             stop = sv.index_at(end_t, "ceil")
-            stop = sv.n if stop is None else stop
             sv.rejections.append(Rejection(start, max(stop, start), f"SETTLING_{cause.upper()}"))
             if typ == "SWITCH_COMMAND":
                 sv.port_changes.append((start, ev["port"]))

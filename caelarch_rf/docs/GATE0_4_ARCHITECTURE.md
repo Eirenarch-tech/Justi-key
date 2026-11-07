@@ -36,9 +36,11 @@ generated identifiability tables are in
 | **ADC** | Sampled IQ. The digital pilot extractor and scene processing act here |
 
 Impairment ids (shared by the observability model, the sealed-truth schema and
-the future disturbance generator): `X H R K J S G A FG FA`. `FG`/`FA` are the
-pilot-vs-scene frequency mismatch of the G and A transfers. `U=AG` is the
-combined receiver phase the pilot targets.
+the Sprint 1a generator): `X H R K J S G A FG FA M`. `FG`/`FA` are the
+pilot-vs-scene frequency mismatch of the G and A transfers. `M` is the analog
+detector's own reference and electronics phase: a quadrature detector reports
+signal phase *minus* its reference phase. `U=AG` is the combined receiver
+phase the pilot targets.
 
 ## 2. What the structural model says
 
@@ -57,11 +59,22 @@ ones. Each is a regression test.
    CONDITIONAL until a signed record backs those bounds.
 4. **No configuration attributes G alone from online data**, including the
    one with every candidate sensor.
-5. **New finding: known-source drift X mimics receiver drift in bracket-only
-   data** (`{X,G}` and `{X,A}` are circuits in C0/C1). The W0/W1 ratio cancels
-   X, so the witness doesn't help here. The handoff treats the RF source as
-   "known". That assumption needs its own bound or monitor, or Gate 0.3
-   bracket conclusions about AG are conditional on it.
+5. **Known-source drift X is an identifiability problem (R1, now QR-X).**
+   `{X,G}` and `{X,A}` are circuits in C0/C1, and the W0/W1 ratio cancels X.
+   In the Gate 0.3 baseline (C1), `U=AG` is estimable only under
+   **{QR-K, QR-X}**. The ambiguity is configuration-specific: with a sampled
+   pilot (C2), `{X,G}` is no longer a circuit, although `{X,J,G}` and
+   `{X,S,G}` are. C2 offers two independent routes to `U`: {QR-K, QR-X}
+   *or* {QR-SJ, QR-F}.
+6. **The analog monitor's own drift weakens option B.** With an
+   independent-reference detector (C3), attributing G now needs
+   {QR-SJ, QR-F, **QR-M**}. Without QR-M, G is confounded. Referencing the
+   detector to the pilot source (C3s) cancels S but not J or M, so G needs
+   {QR-J, QR-F, QR-M}.
+7. **Qualification requirements are computed, not hand-listed.**
+   `OBSERVABILITY_MATRIX.md` lists, for every configuration and every
+   conditionally estimable quantity, the minimal sets of QR-K, QR-X, QR-SJ,
+   QR-J, QR-F and QR-M that a signed record must satisfy.
 
 What the model leaves out: noise, amplitude, time multiplexing of scene and
 reference, sampling, detector bandwidth, non-linearity. Those belong to the
@@ -82,16 +95,19 @@ qualification-record verifier exists.
 
 | # | Risk | Why it matters | Mitigation / owner action |
 |---|---|---|---|
-| R1 | Known RF source phase X is unmonitored | Confounded with G and A in bracket data (§2.5) | Add an X bound to the qualification plan, or a source-referenced monitor. Re-read Gate 0.3 claims as conditional on X |
+| R1 | Known RF source phase X is unmonitored | Confounded with G and A in bracket data (§2.5) | **QR-X** is now an explicit qualification requirement. Gate 0.3 AG conclusions are conditional on it |
 | R2 | Pilot source S and injection J drift | Indistinguishable from U=AG with one pilot | Specify an independent PS→J stability test, or a second, physically distinct observable. Without it, no G attribution |
 | R3 | Frequency-selective transfer (FG, FA) | A single offset pilot only validates U at its own frequency | Measure transfer equivalence across the scene band. Bound FG and FA separately |
 | R4 | Timestamp-aligned 2-channel RX on the B220mini is unconfirmed | Contract alignment and overflow semantics depend on it | Vendor evidence (P0.4). If overflows report no drop count, every overflow untimes the rest of the stream (by design) |
-| R5 | Analog monitor location | It can't sit inside the SDR, so it never sees A | Treat option B as a G-only monitor. Decide option A vs. A+B with the cost audit (P1.4) |
+| R5 | Analog monitor location and own drift | It can't sit inside the SDR, so it never sees A. Its reference adds M | Treat option B as a G-only monitor that needs QR-M. Consider a source-referenced detector (cancels S). Decide with the cost audit (P1.4) |
 | R6 | Witness-to-SDR timebase alignment | A witness is useless for freshness without a measured alignment | Bench method (`shared_pps_trigger` or `loopback_xcorr`) with an uncertainty budget |
 | R7 | Pilot leakage, dynamic range and spectral occupancy | The pilot is not free. It can mask scene changes or desensitise the receiver | Score in P1.4. Contract records `PILOT_STATE` so off-pilot baselines are possible |
 | R8 | Inter-sample and out-of-band pulses | Sampled monitors cannot see them. The bracket cannot either | Report them as missed events with exposure-time denominators. Never invent an online alarm |
 | R9 | No qualification-record authority | VALID_BOUNDED has no issuer | Decide who signs physical records, the key custody and the registry before Gate 0 signoff |
-| R10 | Code lives in the JustiKey repo | No dedicated Caelarch repository was available in this session | Move `caelarch_rf/` to its own repository with history (`git subtree split`) |
+| R10 | Code lives in the JustiKey repo | No dedicated Caelarch repository was available in this session | Move `caelarch_rf/` to its own repository with history (`git subtree split`), without interrupting current work |
+| R11 | Ideal point sampling in the generator | "Intersample glitches are invisible" is a model artifact. A real anti-alias filter leaks them | Sprint 1c front-end model. No unobservability claims from 1a captures |
+| R12 | Lock-detect and settling reports lag physics | Unlocked or unsettled samples before the report, or beyond a short guard, are accepted online | Generator hazards `ref_unlock` and `short_guard`. Measure real latencies and guards on the bench (P1.x). The scorer counts accepted-but-bad samples |
+| R13 | Clock discontinuities invalidate timebase alignments | A witness mapped across a jump is misplaced by the jump | Fixed: alignments are void after `TIME_DISCONTINUITY`. Re-alignment procedure needed for hardware |
 
 ## 5. Preliminary sprint breakdown
 
@@ -99,9 +115,9 @@ qualification-record verifier exists.
 |---|---|---|---|
 | **0 (this change)** | P0.2 observation graph + matrix. P0.3 contract, validator, ingestion, truth isolation. P0.8 four-state adapter. Monitor evidence record | Team review of planes, contract and risks | No |
 | 0 (open) | P0.1 import historical releases into a dedicated repo with tags and archive hashes (see `PROVENANCE.md`). P0.4 vendor gate | Historical tests pass unmodified in CI | P0.4 only |
-| 1a | Blind disturbance generator over the impairment ids. It emits a contract-conformant capture plus a separate sealed truth with commitment | All brief cases (H-only … retune/clip faults) generated. The online loader can't see truth | No |
+| **1a (done)** | Blind disturbance generator, matched-observation pairs per configuration, blindness controls ([`BLIND_GENERATOR.md`](BLIND_GENERATOR.md)) | Reproducible, contract-valid, causal captures. Negative controls show physically different disturbances are observationally equivalent | No |
 | 1b | P0.5 sampled pilot extractor: raw IQ → `PilotObservation` with latency, unwrap continuity and gap handling | Known synthetic steps recovered inside the stated coverage. Leakage and clipping tests | No |
-| 1c | P0.6 analog quadrature model: detector bandwidth, impulse response, dead time, tap at P4 | Shows the detector misses A-side events and out-of-band glitches | No |
+| 1c | P0.6 analog quadrature model: detector bandwidth, impulse response, dead time, tap at P4, **own reference drift M**. Front-end anti-alias model (R11) | Shows the detector misses A-side events and out-of-band glitches. Renders C3/C3s matched pairs | No |
 | 1d | P0.7 attribution guard + window policy on `OnlineCapture` + records → public state | Matched-observable negative controls give the same online state | No |
 | 1e | Offline scorer: detection vs. attribution, false alarms per exposure minute, latency, missed events, trial-cluster bootstrap CIs | Uses `open_for_scoring()` only after decisions are frozen | No |
 | 2 | P1.1–P1.4 instrumentation, conducted wiring review, blind controller, cost audit. B220mini adapter writing this contract | Gate 0 evidence package | **Yes**, plus procurement signoff |

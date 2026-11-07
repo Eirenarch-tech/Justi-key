@@ -67,6 +67,43 @@ class TestObservability(unittest.TestCase):
                 with self.subTest(config=name, k=k):
                     self.assertEqual(res[k].status == "ATTRIBUTABLE", not in_circuit)
 
+    def test_monitor_own_drift_weakens_option_b(self):
+        # Refinement 2: the detector reports signal minus its own reference phase.
+        self.assertEqual(O.SENSORS["analog_monitor_P4"].c("M"), -1)
+        sensors, assumptions, _ = O.CONFIGS["C3_analog_P4"]
+        for alt in O.minimal_requirements(sensors, assumptions, "G"):
+            self.assertIn("M_bounded", alt)
+        no_m = tuple(a for a in assumptions if a != "M_bounded")
+        self.assertEqual(O.analyse(sensors, no_m)["G"].status, "CONFOUNDED")
+
+    def test_source_referenced_detector_cancels_S_but_not_J_or_M(self):
+        self.assertNotIn("S", O.SENSORS["analog_monitor_P4_srcref"].terms)
+        sensors, assumptions, _ = O.CONFIGS["C3s_analog_P4_srcref"]
+        self.assertEqual(O.minimal_requirements(sensors, assumptions, "G"),
+                         [frozenset({"J_bounded", "F_bounded", "M_bounded"})])
+
+    def test_R1_is_an_explicit_qualification_requirement(self):
+        sensors, assumptions, _ = O.CONFIGS["C1_witness"]
+        self.assertEqual(O.REQUIREMENTS["X_bounded"][0], "QR-X")
+        self.assertEqual(O.minimal_requirements(sensors, assumptions, "U=AG"),
+                         [frozenset({"K_qualified", "X_bounded"})])
+        self.assertEqual(O.analyse(sensors, ("K_qualified",))["U=AG"].status, "CONFOUNDED")
+
+    def test_circuits_are_configuration_specific(self):
+        xg = frozenset("XG")
+        self.assertIn(xg, O.circuits(O.CONFIGS["C0_bracket"][0]))
+        self.assertIn(xg, O.circuits(O.CONFIGS["C1_witness"][0]))
+        self.assertNotIn(xg, O.circuits(O.CONFIGS["C2_sampled_pilot"][0]))
+
+    def test_circuit_vectors_annihilate_their_sensors(self):
+        for name, (sensors, _, _) in O.CONFIGS.items():
+            for c in O.circuits(sensors):
+                if len(c) < 2:
+                    continue
+                v = O.circuit_vector(sensors, c)
+                self.assertEqual(set(v), set(c))
+                self.assertTrue(all(abs(x) < 1e-12 for x in O.observe(sensors, v).values()), (name, c))
+
     def test_generated_doc_is_current(self):
         path = os.path.join(HERE, "..", "docs", "OBSERVABILITY_MATRIX.md")
         with open(path, encoding="utf-8") as f:
@@ -150,14 +187,16 @@ class TestIsolation(unittest.TestCase):
                     mods = [node.module or ""] + [a.name for a in node.names]
                 with self.subTest(module=name):
                     self.assertFalse(any("sealed_truth" in m for m in mods))
+                    self.assertFalse(any(m == "sim" or "caelarch_rf.sim" in m for m in mods))
 
     def test_stdlib_only(self):
         import sys
-        allowed = set(sys.stdlib_module_names) | {"__future__"}
-        for name in os.listdir(PKG):
-            if not name.endswith(".py"):
-                continue
-            with open(os.path.join(PKG, name), encoding="utf-8") as f:
+        allowed = set(sys.stdlib_module_names) | {"__future__", "caelarch_rf"}
+        sim = os.path.join(HERE, "..", "sim")
+        paths = [os.path.join(d, n) for d in (PKG, sim) for n in os.listdir(d) if n.endswith(".py")]
+        for path in paths:
+            name = os.path.basename(path)
+            with open(path, encoding="utf-8") as f:
                 tree = ast.parse(f.read())
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):

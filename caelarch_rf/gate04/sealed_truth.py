@@ -31,13 +31,19 @@ def _canonical(doc):
     return (json.dumps(doc, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
 
 
-def write_truth(path, capture_id, controller_timebase, events, salt=None):
-    """Write a truth file; return the manifest ``truth_commitment`` block."""
+def write_truth(path, capture_id, controller_timebase, events, salt=None, extra=None):
+    """Write a truth file; return the manifest ``truth_commitment`` block.
+
+    ``extra`` (optional dict) is stored under ``"generator"``: seeds, clock
+    model and acquisition-fault notes the scorer needs to reconstruct truth.
+    """
     salt = salt if salt is not None else secrets.token_bytes(MIN_SALT_BYTES)
     if len(salt) < MIN_SALT_BYTES:
         raise ValueError("salt too short")
     doc = {"schema": C.SCHEMA_TRUTH, "capture_id": capture_id, "salt_hex": salt.hex(),
            "timebase": controller_timebase, "events": list(events)}
+    if extra is not None:
+        doc["generator"] = extra
     _check(doc)
     data = _canonical(doc)
     with open(path, "wb") as f:

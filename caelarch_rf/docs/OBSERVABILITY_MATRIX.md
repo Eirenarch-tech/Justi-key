@@ -18,42 +18,69 @@ Structural, linearised phase model. **Necessary, not sufficient**: a cell that i
 | `A` | SDR internal conversion, P4 -> ADC (LO, IF filters, sample clock) |
 | `FG` | Pilot-vs-scene frequency mismatch of the G transfer |
 | `FA` | Pilot-vs-scene frequency mismatch of the A transfer |
+| `M` | Analog detector's own reference and electronics phase (monitor-internal) |
 | `U=AG` | Combined receiver phase G + A (functional, not a separate term) |
 
-## Sensor x impairment (does the sensor's phase move?)
+## Sensor x impairment (signed phase coefficient)
 
-| Sensor | Plane | X | H | R | K | J | S | G | A | FG | FA | Exists? |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `scene` | ADC (selector on H) | x | x | . | . | . | . | x | x | . | . | planned (no hardware yet) |
-| `reference` | ADC (selector on R) | x | . | x | . | . | . | x | x | . | . | planned (no hardware yet) |
-| `witness` | P0/P1 (external instrument) | . | . | x | x | . | . | . | . | . | . | planned (no hardware yet) |
-| `pilot_sampled` | ADC (digital extraction) | . | . | . | . | x | x | x | x | x | x | planned (no hardware yet) |
-| `analog_monitor_P4` | P4 (before SDR conversion) | . | . | . | . | x | x | x | . | x | . | hypothetical |
-| `pilot_path_monitor` | PS -> J (independent coupler/detector) | . | . | . | . | x | x | . | . | . | . | hypothetical |
+`+1`/`-1`: the sensor's phase moves with/against the term; `.`: does not move. A quadrature detector reports signal phase minus its own reference phase.
+
+| Sensor | Plane | X | H | R | K | J | S | G | A | FG | FA | M | Exists? |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `scene` | ADC (selector on H) | +1 | +1 | . | . | . | . | +1 | +1 | . | . | . | planned (no hardware yet) |
+| `reference` | ADC (selector on R) | +1 | . | +1 | . | . | . | +1 | +1 | . | . | . | planned (no hardware yet) |
+| `witness` | P0/P1 (external instrument) | . | . | +1 | +1 | . | . | . | . | . | . | . | planned (no hardware yet) |
+| `pilot_sampled` | ADC (digital extraction) | . | . | . | . | +1 | +1 | +1 | +1 | +1 | +1 | . | planned (no hardware yet) |
+| `analog_monitor_P4` | P4, independent detector reference | . | . | . | . | +1 | +1 | +1 | . | +1 | . | -1 | hypothetical |
+| `analog_monitor_P4_srcref` | P4, reference tapped from pilot source at PS | . | . | . | . | +1 | . | +1 | . | +1 | . | -1 | hypothetical |
+| `pilot_path_monitor` | PS -> J (independent coupler/detector) | . | . | . | . | +1 | +1 | . | . | . | . | . | hypothetical |
 
 ## Configuration x impairment (online attribution)
 
 `**attrib**` estimable from online data alone; `cond` estimable only with the listed qualified-bound assumptions (state at best CONDITIONAL until a signed record exists); `conf` detectable but confounded; `-` undetectable.
 
-| Config | Sensors | Assumptions | X | H | R | K | J | S | G | A | FG | FA | U=AG |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| `C0_bracket` | scene, reference | none | conf | conf | conf | - | - | - | conf | conf | - | - | conf |
-| `C1_witness` | scene, reference, witness | K_qualified | conf | cond | cond | cond | - | - | conf | conf | - | - | conf |
-| `C2_sampled_pilot` | scene, reference, witness, pilot_sampled | K_qualified, SJ_bounded, F_bounded | cond | cond | cond | cond | conf | conf | conf | conf | cond | cond | cond |
-| `C3_analog_P4` | scene, reference, witness, analog_monitor_P4 | K_qualified, SJ_bounded, F_bounded | conf | cond | cond | cond | conf | conf | cond | conf | cond | - | conf |
-| `C4_pilot_plus_path` | scene, reference, witness, pilot_sampled, pilot_path_monitor | K_qualified, F_bounded | cond | cond | cond | cond | conf | conf | conf | conf | cond | cond | cond |
-| `C5_all` | scene, reference, witness, pilot_sampled, analog_monitor_P4, pilot_path_monitor | K_qualified | conf | cond | cond | cond | conf | conf | conf | conf | conf | conf | conf |
+| Config | Sensors | Candidate assumptions | X | H | R | K | J | S | G | A | FG | FA | M | U=AG |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `C0_bracket` | scene, reference | X_bounded | cond | conf | conf | - | - | - | conf | conf | - | - | - | conf |
+| `C1_witness` | scene, reference, witness | K_qualified, X_bounded | cond | cond | cond | cond | - | - | conf | conf | - | - | - | cond |
+| `C2_sampled_pilot` | scene, reference, witness, pilot_sampled | K_qualified, X_bounded, SJ_bounded, F_bounded | cond | cond | cond | cond | conf | conf | conf | conf | cond | cond | - | cond |
+| `C3_analog_P4` | scene, reference, witness, analog_monitor_P4 | K_qualified, X_bounded, SJ_bounded, F_bounded, M_bounded | cond | cond | cond | cond | conf | conf | cond | cond | cond | - | cond | cond |
+| `C3s_analog_P4_srcref` | scene, reference, witness, analog_monitor_P4_srcref | K_qualified, X_bounded, J_bounded, F_bounded, M_bounded | cond | cond | cond | cond | cond | - | cond | cond | cond | - | cond | cond |
+| `C4_pilot_plus_path` | scene, reference, witness, pilot_sampled, pilot_path_monitor | K_qualified, X_bounded, F_bounded | cond | cond | cond | cond | conf | conf | conf | conf | cond | cond | - | cond |
+| `C5_all` | scene, reference, witness, pilot_sampled, analog_monitor_P4, pilot_path_monitor | K_qualified, X_bounded, F_bounded, M_bounded | cond | cond | cond | cond | conf | conf | cond | cond | cond | cond | cond | cond |
+
+## Qualification requirements
+
+| Id | Assumption | Requirement |
+|---|---|---|
+| **QR-K** | `K_qualified` | Witness differential transfer K characterised at the P0/P1 planes, with drift bound over the capture |
+| **QR-X** | `X_bounded` | Known RF source phase X bounded (or independently monitored) over every bracket span; required by finding R1 |
+| **QR-SJ** | `SJ_bounded` | Joint pilot source + injection path drift S+J bounded |
+| **QR-J** | `J_bounded` | Injection path J drift bounded on its own (source-referenced detector) |
+| **QR-F** | `F_bounded` | Pilot-vs-scene transfer equivalence: FG and FA each bounded across the scene band |
+| **QR-M** | `M_bounded` | Analog detector reference and electronics drift M bounded |
+
+Minimal requirement sets per configuration: each alternative (separated by *or*) is a smallest set of QRs that makes the quantity estimable. A quantity absent from a row stays confounded under every candidate assumption.
+
+- **C0_bracket**: `X`: {QR-X}
+- **C1_witness**: `X`: {QR-X}; `H`: {QR-K}; `R`: {QR-K}; `K`: {QR-K}; `U=AG`: {QR-K, QR-X}
+- **C2_sampled_pilot**: `X`: {QR-X} *or* {QR-K, QR-SJ, QR-F}; `H`: {QR-K} *or* {QR-X, QR-SJ, QR-F}; `R`: {QR-K} *or* {QR-X, QR-SJ, QR-F}; `K`: {QR-K} *or* {QR-X, QR-SJ, QR-F}; `FG`: {QR-F}; `FA`: {QR-F}; `U=AG`: {QR-K, QR-X} *or* {QR-SJ, QR-F}
+- **C3_analog_P4**: `X`: {QR-X}; `H`: {QR-K}; `R`: {QR-K}; `K`: {QR-K}; `G`: {QR-SJ, QR-F, QR-M}; `A`: {QR-K, QR-X, QR-SJ, QR-F, QR-M}; `FG`: {QR-F}; `M`: {QR-M}; `U=AG`: {QR-K, QR-X}
+- **C3s_analog_P4_srcref**: `X`: {QR-X}; `H`: {QR-K}; `R`: {QR-K}; `K`: {QR-K}; `J`: {QR-J}; `G`: {QR-J, QR-F, QR-M}; `A`: {QR-K, QR-X, QR-J, QR-F, QR-M}; `FG`: {QR-F}; `M`: {QR-M}; `U=AG`: {QR-K, QR-X}
+- **C4_pilot_plus_path**: `X`: {QR-X} *or* {QR-K, QR-F}; `H`: {QR-K} *or* {QR-X, QR-F}; `R`: {QR-K} *or* {QR-X, QR-F}; `K`: {QR-K} *or* {QR-X, QR-F}; `FG`: {QR-F}; `FA`: {QR-F}; `U=AG`: {QR-F} *or* {QR-K, QR-X}
+- **C5_all**: `X`: {QR-X} *or* {QR-K, QR-F}; `H`: {QR-K} *or* {QR-X, QR-F}; `R`: {QR-K} *or* {QR-X, QR-F}; `K`: {QR-K} *or* {QR-X, QR-F}; `G`: {QR-F, QR-M}; `A`: {QR-F, QR-M}; `FG`: {QR-F}; `FA`: {QR-F}; `M`: {QR-M}; `U=AG`: {QR-F} *or* {QR-K, QR-X}
 
 ## Minimal confounding sets (online data only)
 
-Each set is a *circuit*: some non-zero combination of changes to exactly those impairments leaves every sensor in the configuration unchanged, so the online data cannot tell them apart. A pair such as `{G,A}` means the two have identical sensor signatures.
+Each set is a *circuit*: some non-zero combination of changes to exactly those impairments leaves every sensor in the configuration unchanged, so the online data cannot tell them apart. A pair such as `{G,A}` means the two have identical sensor signatures. Circuits are per configuration: `{X,G}` is a circuit of C0/C1 but not of C2, where the pilot separates them (larger circuits such as `{X,J,G}` remain). The Sprint 1a generator builds matched disturbance pairs from these sets.
 
 - **C0_bracket** (Scene + switched reference only): `{X,G}`, `{X,A}`, `{G,A}`, `{X,H,R}`, `{H,R,G}`, `{H,R,A}`
 - **C1_witness** (Gate 0.3 baseline: + independent R witness): `{X,G}`, `{X,A}`, `{G,A}`, `{X,H,R,K}`, `{H,R,K,G}`, `{H,R,K,A}`
 - **C2_sampled_pilot** (004.4 option A: + sampled SDR pilot): `{J,S}`, `{J,FG}`, `{J,FA}`, `{S,FG}`, `{S,FA}`, `{G,A}`, `{FG,FA}`, `{X,J,G}`, `{X,J,A}`, `{X,S,G}`, `{X,S,A}`, `{X,G,FG}`, `{X,G,FA}`, `{X,A,FG}`, `{X,A,FA}`, `{X,H,R,K}`, `{H,R,K,J,G}`, `{H,R,K,J,A}`, `{H,R,K,S,G}`, `{H,R,K,S,A}`, `{H,R,K,G,FG}`, `{H,R,K,G,FA}`, `{H,R,K,A,FG}`, `{H,R,K,A,FA}`
-- **C3_analog_P4** (004.4 option B: + analog quadrature monitor at P4): `{X,A}`, `{J,S}`, `{J,FG}`, `{S,FG}`, `{X,J,G}`, `{X,S,G}`, `{X,G,FG}`, `{J,G,A}`, `{S,G,A}`, `{G,A,FG}`, `{X,H,R,K}`, `{H,R,K,A}`, `{H,R,K,J,G}`, `{H,R,K,S,G}`, `{H,R,K,G,FG}`
+- **C3_analog_P4** (004.4 option B: + analog detector at P4, independent reference): `{X,A}`, `{J,S}`, `{J,FG}`, `{J,M}`, `{S,FG}`, `{S,M}`, `{FG,M}`, `{X,J,G}`, `{X,S,G}`, `{X,G,FG}`, `{X,G,M}`, `{J,G,A}`, `{S,G,A}`, `{G,A,FG}`, `{G,A,M}`, `{X,H,R,K}`, `{H,R,K,A}`, `{H,R,K,J,G}`, `{H,R,K,S,G}`, `{H,R,K,G,FG}`, `{H,R,K,G,M}`
+- **C3s_analog_P4_srcref** (Option B with the detector referenced to the pilot source): `{X,A}`, `{J,FG}`, `{J,M}`, `{FG,M}`, `{X,J,G}`, `{X,G,FG}`, `{X,G,M}`, `{J,G,A}`, `{G,A,FG}`, `{G,A,M}`, `{X,H,R,K}`, `{H,R,K,A}`, `{H,R,K,J,G}`, `{H,R,K,G,FG}`, `{H,R,K,G,M}`
 - **C4_pilot_plus_path** (Option A + independent pilot-path monitor): `{J,S}`, `{G,A}`, `{FG,FA}`, `{X,G,FG}`, `{X,G,FA}`, `{X,A,FG}`, `{X,A,FA}`, `{X,H,R,K}`, `{H,R,K,G,FG}`, `{H,R,K,G,FA}`, `{H,R,K,A,FG}`, `{H,R,K,A,FA}`
-- **C5_all** (Every candidate sensor): `{J,S}`, `{X,G,FG}`, `{X,A,FA}`, `{X,H,R,K}`, `{G,A,FG,FA}`, `{H,R,K,G,FG}`, `{H,R,K,A,FA}`
+- **C5_all** (Every candidate sensor (independent-reference detector)): `{J,S}`, `{X,G,FG}`, `{X,A,FA}`, `{G,A,M}`, `{FG,FA,M}`, `{X,H,R,K}`, `{X,G,FA,M}`, `{X,A,FG,M}`, `{G,A,FG,FA}`, `{H,R,K,G,FG}`, `{H,R,K,A,FA}`, `{H,R,K,G,FA,M}`, `{H,R,K,A,FG,M}`
 
 ## Temporal coverage (qualitative; not in the rank analysis)
 
@@ -63,5 +90,6 @@ Each set is a *circuit*: some non-zero combination of changes to exactly those i
 | `reference` | Sampled at fs only while selector is on R; brackets cannot see interior AG excursions |
 | `witness` | Instrument rate; needs a declared timebase alignment to be fresh against SDR time |
 | `pilot_sampled` | Sampled at fs, continuous across selector states, minus gaps/clipping/settling; blind between samples and above extraction bandwidth |
-| `analog_monitor_P4` | Continuous-time but band-limited by detector; cannot see A (downstream of tap) |
+| `analog_monitor_P4` | Continuous-time but band-limited by detector; cannot see A; adds its own drift M |
+| `analog_monitor_P4_srcref` | As analog_monitor_P4, but source phase S cancels; reference-path drift enters as M |
 | `pilot_path_monitor` | Independent observation of source+injection; does not exist yet |

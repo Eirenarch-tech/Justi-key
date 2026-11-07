@@ -229,7 +229,9 @@ class TestFailClosedTiming(Base):
         sv = load_capture(self.root).streams["rx0"]
         self.assertEqual(sv.time_of(3999), 3_999_000)
         self.assertEqual(sv.time_of(4000), 4_250_000)
-        self.assertIsNone(sv.index_at(4_100_000))  # inside the dropout gap
+        # Inside the dropout gap: resolve to the boundary samples.
+        self.assertEqual(sv.index_at(4_100_000, "ceil"), 4000)
+        self.assertEqual(sv.index_at(4_100_000, "floor"), 3999)
         self.assertEqual(sv.accepted_ranges(), [(0, 3999), (4001, synth.N)])
 
     def test_switch_on_unaligned_timebase_is_refused(self):
@@ -289,6 +291,17 @@ class TestWitnessFreshness(Base):
         # A witness at 6 ms +/- 0.5 us is not certainly in the past at 6.0002 ms.
         self.assertEqual(cap.latest_witness(6_000_200, "sdr0", 10**7).record["seq"], 0)
         self.assertEqual(cap.latest_witness(1_000_000, "sdr0", 10**7).reason, "NO_VALID_PRIOR_WITNESS")
+
+    def test_time_discontinuity_voids_alignment(self):
+        ev = [{"seq": 0, "type": "TIME_DISCONTINUITY", "timebase": "sdr0", "t_ns": 4_000_000,
+               "stream_id": "rx0", "sample_index": 4000, "jump_ns": 50_000}]
+        self.write(events=ev)
+        cap = load_capture(self.root)
+        self.assertEqual(cap.latest_witness(3_900_000, "sdr0", 10 ** 9).reason, "OK")
+        # The witness at 6 ms (wit0) would map past the jump: refused, so the
+        # newest usable record is the pre-jump one at 2 ms.
+        self.assertIsNone(cap.map_time(6_000_000, "wit0", "sdr0"))
+        self.assertEqual(cap.latest_witness(9_000_000, "sdr0", 10 ** 9).record["seq"], 0)
 
     def test_witness_without_alignment_is_unusable(self):
         m = synth.base_manifest()
