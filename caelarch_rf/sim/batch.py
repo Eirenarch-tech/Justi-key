@@ -98,7 +98,7 @@ def cases_for(config) -> List[str]:
 
 
 def generate_blind_batch(capture_root, truth_root, seed, n, config="C2_sampled_pilot",
-                         cases=None, duration_ns=20_000_000, fs_hz=1_000_000) -> List[str]:
+                         cases=None, duration_ns=20_000_000, fs_hz=1_000_000, hardware=None) -> List[str]:
     """Generate ``n`` blind captures. Returns capture ids only (never cases)."""
     master = normalize_seed(seed)
     if _inside(truth_root, capture_root) or _inside(capture_root, truth_root):
@@ -119,7 +119,7 @@ def generate_blind_batch(capture_root, truth_root, seed, n, config="C2_sampled_p
         rng = stream(cap_seed, "disturbance")
         dists, faults = LIBRARY[case](rng, duration_ns, fs_hz)
         sc = Scenario(disturbances=dists, faults=faults, config=config,
-                      duration_ns=duration_ns, fs_hz=fs_hz, case=case)
+                      duration_ns=duration_ns, fs_hz=fs_hz, case=case, hardware=hardware)
         cid = capture_id_for(cap_seed)
         generate(sc, cap_seed, os.path.join(capture_root, cid), os.path.join(truth_root, cid + ".truth.json"))
         ids.append(cid)

@@ -26,6 +26,7 @@ from caelarch_rf.gate04.observability import CONFIGS, leakage_breaks
 from . import generator as G
 from .batch import cases_for, generate_blind_batch
 from .disturbances import Disturbance
+from .hardware import PRESETS
 from .leakage import pilot_into_scene, scene_into_analog, scene_into_pilot
 from .matched import emittable_circuits, matched_pair
 from .scorer import MatchPolicy, score
@@ -38,7 +39,7 @@ HARDWARE = {
 }
 
 
-def matched_controls(work, seed, config, n_circuits=6):
+def matched_controls(work, seed, config, n_circuits=6, hardware=None):
     """Online outputs of matched pairs must be identical (attribution integrity)."""
     sensors = CONFIGS[config][0]
     circs = emittable_circuits(config)
@@ -47,7 +48,7 @@ def matched_controls(work, seed, config, n_circuits=6):
     tpl = Disturbance("G", "step", 9_030_000, 0.5)
     rows = []
     for i, circ in enumerate(chosen):
-        sa, sb = matched_pair(G.Scenario(config=config), circ, tpl)
+        sa, sb = matched_pair(G.Scenario(config=config, hardware=hardware), circ, tpl)
         recs = []
         for j, sc in enumerate((sa, sb)):
             d = os.path.join(work, f"pair{i}_{j}")
@@ -95,27 +96,29 @@ def resources(frozen_path, truth_root, scenario):
     return out
 
 
-def run(out_dir, n=102, seed=None, config="C6_pilot_analog", duration_ns=20_000_000):
+def run(out_dir, n=102, seed=None, config="C6_pilot_analog", duration_ns=20_000_000, hardware=None):
     seed = seed or secrets.token_hex(32)
     caps, truth = os.path.join(out_dir, "captures"), os.path.join(out_dir, "truth")
     os.makedirs(truth, exist_ok=True)
     with open(os.path.join(truth, "study_seed.hex"), "w") as f:
         f.write(seed + "\n")
-    generate_blind_batch(caps, truth, seed, n, config=config, duration_ns=duration_ns)
+    hw = PRESETS[hardware] if hardware else None
+    generate_blind_batch(caps, truth, seed, n, config=config, duration_ns=duration_ns, hardware=hw)
     frozen = os.path.join(out_dir, "frozen_online.json")
     digest = freeze(caps, frozen)                       # online outputs fixed here...
     policy = MatchPolicy()
     report = score(frozen, truth, digest, policy)       # ...truth opened only after this check
-    sc = G.Scenario(config=config, duration_ns=duration_ns)
+    sc = G.Scenario(config=config, duration_ns=duration_ns, hardware=hw)
     work = os.path.join(out_dir, "controls")
     os.makedirs(work, exist_ok=True)
     ctrl_seed = G.derive_bytes(bytes.fromhex(seed), "controls").hex()
-    report["matched_pair_controls"] = matched_controls(work, ctrl_seed, config)
+    report["matched_pair_controls"] = matched_controls(work, ctrl_seed, config, hardware=hw)
     report["leakage"] = {"pilot_into_scene": pilot_into_scene(ctrl_seed, replace(sc, duration_ns=10_000_000)),
                          "scene_into_pilot": scene_into_pilot(ctrl_seed, replace(sc, duration_ns=10_000_000)),
                          "scene_into_analog": scene_into_analog(ctrl_seed, replace(sc, duration_ns=10_000_000))}
     report["resources"] = resources(frozen, truth, sc)
     report["study"] = {"config": config, "n": n, "duration_ns": duration_ns, "cases": cases_for(config),
+                       "hardware": hw.to_dict() if hw else None,
                        "seed_location": "truth/study_seed.hex (offline)"}
     with open(os.path.join(out_dir, "report.json"), "w") as f:
         json.dump(report, f, indent=1, sort_keys=True, default=list)
@@ -135,7 +138,8 @@ def _p(x):
 
 def render(r) -> str:
     L = ["# Sprint 1e blind evaluation (synthetic)\n",
-         f"Captures: {r['n_captures']} ({r['study']['config']}, {r['study']['duration_ns'] / 1e6:g} ms each). "
+         f"Captures: {r['n_captures']} ({r['study']['config']}, {r['study']['duration_ns'] / 1e6:g} ms each; "
+         f"receiver: {(r['study'].get('hardware') or {}).get('name', 'ideal')}). "
          f"Frozen online outputs sha256 `{r['frozen_sha256'][:16]}…`; match policy "
          f"`{r['policy']['version']}` sha256 `{r['policy_sha256'][:16]}…`. All detectors scored on the "
          "same captures (paired, identical acquisition budget). **Synthetic, illustrative envelope; "
@@ -223,8 +227,9 @@ def main(argv=None):
     ap.add_argument("--n", type=int, default=102)
     ap.add_argument("--seed-hex")
     ap.add_argument("--config", default="C6_pilot_analog", choices=["C6_pilot_analog", "C6s_pilot_analog_srcref"])
+    ap.add_argument("--hardware", choices=sorted(PRESETS), help="receiver artefact preset (default: ideal)")
     a = ap.parse_args(argv)
-    run(a.out, a.n, a.seed_hex, a.config)
+    run(a.out, a.n, a.seed_hex, a.config, hardware=a.hardware)
     print(f"report: {os.path.join(a.out, 'report.md')}")
     return 0
 

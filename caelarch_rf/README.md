@@ -37,6 +37,7 @@ a causal online guard and a freeze-before-reveal blind scorer, with a
 | `docs/SPRINT1E_STUDY.md` | 1e | Blind study results and interpretation (synthetic) |
 | `gate04/guard.py`, `gate04/evaluate.py` | 1d | **Online.** Causal multi-monitor guard; freezing of online outputs |
 | `docs/PUBLIC_IQ_CHECK.md` | real-data check | 35/36 public over-the-air recordings through the loader; hardware artefacts the generator lacks |
+| `docs/HARDWARE_ARTEFACTS.md`, `sim/hardware.py` | generator | Receiver artefacts (interference, compression, IQ imbalance, DC, N-bit ADC); calibrated presets; study comparison |
 | `adapters/external_raw.py`, `tools/public_iq_check.py` | real-data check | cu8/cs8/cs16 → capture adapter (no invented metadata); analysis tool (numpy) |
 | `sim/scorer.py`, `sim/study.py` | 1e | **Offline.** Blind scorer, clustered CIs, Poisson FA bounds; study orchestration (CLI) |
 
@@ -44,8 +45,9 @@ Stdlib only (enforced by a test), so the validator runs on a bench host and
 the generator's random streams don't depend on a numpy version.
 
 ```bash
-python3 -m unittest discover -s caelarch_rf/tests -t .      # 135 tests, ~45 s
+python3 -m unittest discover -s caelarch_rf/tests -t .      # 144 tests, ~45 s
 python3 -m caelarch_rf.sim.study --out OUT --n 102         # blind study, ~40 s
+python3 -m caelarch_rf.sim.study --out OUT --n 102 --hardware rtl_sdr_adverse   # same, realistic receiver
 python3 -m caelarch_rf.sim.batch --captures OUT/caps --truth OUT/truth --n 40
 python3 -m caelarch_rf.gate04.validate <capture_dir>        # contract check
 python3 -m caelarch_rf.gate04.observability                 # regenerate matrix doc

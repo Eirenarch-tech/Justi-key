@@ -40,10 +40,14 @@ claim.**
 4. **Abrupt receiver changes of 0.4 rad or more were never passed as
    CONDITIONAL by the pilot guard** (0/16). Between 0.15 and 0.4 rad, about a
    third were, consistent with floors of about 0.2–0.27 rad.
-5. **Attribution integrity held.** No unique attribution and no
-   VALID_BOUNDED were issued. The consistent set held a true cause in 100% of
-   detected windows, after the non-detection fix. Matched pairs, including
-   leakage-broken ones, gave identical online outputs.
+5. **Attribution integrity held, with one correction.** No unique attribution
+   and no VALID_BOUNDED were issued. The consistent set held a true cause in 100%
+   of detected windows, after the non-detection fix. All non-leakage matched
+   pairs gave identical online outputs. **Correction:** an earlier version of this
+   section said leakage-broken pairs did too. For `{A,FA,X}` the detector
+   excursions are identical, but one guard window's cause narrowing differs,
+   because scene leakage nudged the analog monitor's causal noise floor across
+   the exclusion threshold (see `HARDWARE_ARTEFACTS.md`, risk R20).
 6. **False-alarm evidence is weak.** Zero false alarms in about 0.03 monitored
    minutes bounds the rate only at about 110/min. This needs far longer
    exposure.

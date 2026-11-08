@@ -44,6 +44,11 @@ point sampling**:
   (unlocked pilot source, 2 rad/√s), a pilot-source frequency offset (up to
   ±300 Hz), and M drift in the analog configs. All illustrative and all
   recorded in truth.
+* **Receiver hardware (opt-in, `Scenario(hardware=...)`):** interference bursts,
+  front-end compression, IQ imbalance, DC/LO leakage and an N-bit ADC.
+  Presets are calibrated on public RTL-SDR recordings; see
+  [`HARDWARE_ARTEFACTS.md`](HARDWARE_ARTEFACTS.md). Default: ideal receiver
+  (output unchanged).
 * **Timing:** sample-clock error (±2 ppm), random device-time origin, witness
   timebase offset, and a declared alignment error inside the declared
   uncertainty. Events are scheduled in physical time and stamped through the
@@ -137,8 +142,10 @@ would also reveal: the physics in the samples, and the operating events.
   sub-sample glitch into neighbouring samples, attenuated. Sprint 1c's
   front-end/analog model must revisit this before anyone claims a glitch was
   "unobservable".
-* Phase impairments only, apart from the gain step. No IQ imbalance,
-  multipath, amplitude drift, non-linearity or DC offset.
+* Without a hardware preset: phase impairments only, apart from the gain
+  step. The presets add IQ imbalance, DC, compression, quantisation and
+  interference. Still no multipath, amplitude drift, AM/PM, frequency-dependent
+  imbalance or ADC INL/DNL.
 * One channel. A two-channel B220mini-class adapter waits on vendor answers.
 * The noise and disturbance envelope is illustrative. No detection
   threshold is implied. Thresholds belong to Sprint 1b/1e and must be tied

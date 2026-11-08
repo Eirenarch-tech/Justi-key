@@ -96,8 +96,11 @@ observable and monitored events.
   acquisition-induced changes count as true causes).
 
 **Matched-pair controls.** Online outputs (excursions, guard states,
-candidate sets) must be identical for matched pairs, including
-leakage-broken ones.
+candidate sets) must be identical for matched pairs of circuits that leakage
+does not break. That holds in every run. For leakage-broken pairs, detector
+excursions were identical, but in `{A,FA,X}` one guard window's cause
+narrowing differed: leakage reached the still monitor's causal floor (risk
+R20).
 
 **Resource accounting:**
 * usable exposure, not-ready fraction and logger dead time per detector;

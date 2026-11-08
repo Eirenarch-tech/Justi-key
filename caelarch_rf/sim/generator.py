@@ -53,6 +53,7 @@ from caelarch_rf.gate04 import sealed_truth
 from caelarch_rf.gate04.observability import CONFIGS
 
 from .disturbances import Disturbance
+from .hardware import FrontEnd, HardwareModel, draw_bursts, interference
 
 GENERATOR_VERSION = "caelarch-sim 0.1"
 MIN_SEED_BYTES = 16
@@ -147,6 +148,7 @@ class Scenario:
     scene_on: bool = True         # False removes the scene tone (leakage studies)
     analog_bw_hz: float = 10_000.0     # analog detector effective -3 dB bandwidth
     monitor_rate_hz: int = 200_000     # analog logger sample rate (divides fs_hz)
+    hardware: Optional[HardwareModel] = None   # receiver artefacts (sim/hardware.py); None = ideal
     case: str = "custom"          # truth-only label
 
     def __post_init__(self):
@@ -358,6 +360,10 @@ class Simulation:
                 self.background.append(Disturbance("M", "random_walk", 0, M_WALK[self.analog],
                                                    sc.duration_ns, seed=m_seed, cause="background"))
         self.disturbances = self._resolve(list(sc.disturbances)) + self.fx.hidden + self.background
+        self.hw = sc.hardware
+        self.bursts = (draw_bursts(sc.hardware, stream(master, "interference"), sc.duration_ns, sc.fs_hz)
+                       if sc.hardware else [])
+        self.front_end = FrontEnd(sc.hardware, stream(master, "hardware")) if sc.hardware else None
         self._render()
 
     def _resolve(self, ds):
@@ -424,6 +430,7 @@ class Simulation:
         noise = stream(self.master, "noise")
         gains = sorted(fx.gain)
         iq: List[complex] = []
+        interf = interference(self.bursts, tp)
         self.port_phys: List[str] = []
         si, prev_port, port = 0, "TERM", "TERM"
         for n in range(n0):
@@ -461,6 +468,8 @@ class Simulation:
             for tb, dur, amp, fb in fx.bursts:
                 if tb <= t < tb + dur:
                     v += amp * cmath.exp(2j * math.pi * fb * t * 1e-9)
+            if n in interf:
+                v += interf[n]          # interference, specified at ADC level (dBFS)
             iq.append(v)
         self.iq_float = iq
         if self.analog:
@@ -581,14 +590,29 @@ class Simulation:
     # ---------------------------------------------------------------- outputs
 
     def quantized(self) -> array.array:
-        """Interleaved int16 I/Q after dropping lost samples; saturating."""
+        """Interleaved int16 I/Q after dropping lost samples.
+
+        Ideal receiver: round and saturate at int16. With a hardware model:
+        front-end compression, IQ imbalance, DC offset and an N-bit ADC.
+        """
         a = array.array("h")
+        fe = self.front_end
         for n, v in enumerate(self.iq_float):
             if self.clock.file_index(n) is None:
                 continue
-            a.append(max(-32768, min(32767, int(round(v.real)))))
-            a.append(max(-32768, min(32767, int(round(v.imag)))))
+            if fe is None:
+                a.append(max(-32768, min(32767, int(round(v.real)))))
+                a.append(max(-32768, min(32767, int(round(v.imag)))))
+            else:
+                a.extend(fe(v))
         return a
+
+    def hardware_truth(self):
+        return {"model": self.hw.to_dict(), "front_end": self.front_end.summary(),
+                "interference": [b.__dict__ for b in self.bursts]}
+
+    def clip_level(self):
+        return self.hw.rail if self.hw and self.hw.adc_bits < 16 else CLIP_LEVEL
 
     def events(self) -> List[dict]:
         """Online events, ordered by physical time (each timebase stays monotonic)."""
@@ -694,7 +718,8 @@ def generate(scenario: Scenario, seed, capture_dir, truth_path) -> dict:
 
     commitment = sealed_truth.write_truth(
         truth_path, cid, PHYS, [d.to_truth() for d in sim.disturbances],
-        salt=derive_bytes(master, "truth_salt"), extra=sim.truth_extra())
+        salt=derive_bytes(master, "truth_salt"),
+        extra={**sim.truth_extra(), **({"hardware": sim.hardware_truth()} if sim.hw else {})})
 
     p = sim.plan
     timebases = [{"id": "sdr0", "kind": "sdr_device"}]
@@ -722,7 +747,8 @@ def generate(scenario: Scenario, seed, capture_dir, truth_path) -> dict:
         "schema": C.SCHEMA_MANIFEST, "capture_id": cid, "created_utc": FIXED_CREATED,
         "graph_version": C.GRAPH_VERSION,
         "provenance": {"kind": "synthetic", "operator": "blind generator", "software": GENERATOR_VERSION},
-        "device": {"model": "simulated single channel", "serial": None, "driver": "none",
+        "device": {"model": ("simulated single channel" if not scenario.hardware else
+                             f"simulated {scenario.hardware.adc_bits}-bit receiver"), "serial": None, "driver": "none",
                    "fpga_image_sha256": None},
         "clock": {"ref_source": "external_10mhz", "pps_source": "external", "ref_locked_at_start": True},
         "timebases": timebases, "timebase_alignments": aligns,
@@ -732,7 +758,7 @@ def generate(scenario: Scenario, seed, capture_dir, truth_path) -> dict:
             "stream_id": "rx0", "channel": 0, "file": "rx0.sc16", "sha256": sha["rx0.sc16"],
             "format": "sc16_le", "sample_count": sim.sample_count(), "sample_rate_hz": scenario.fs_hz,
             "center_freq_hz": CENTER0_HZ, "rx_gain_db": BASE_GAIN_DB, "timebase": "sdr0",
-            "t0_ns": p["t0_dev"], "clip_level": CLIP_LEVEL,
+            "t0_ns": p["t0_dev"], "clip_level": sim.clip_level(),
             "carries": ["scene", "reference"] + (["pilot"] if pilot else []),
             "pilot": {"offset_hz": PILOT_RF_HZ - CENTER0_HZ, "waveform_id": "cw"} if pilot else None,
             "reference_tone": {"offset_hz": SCENE_RF_HZ - CENTER0_HZ},
