@@ -232,16 +232,22 @@ class _Tracker:
             innov = _wrap(phase - pred)
             ready = self.ready()
             sig = math.sqrt(self.sigma2) if self.sigma2 else None
-            if abs(innov) > p.unwrap_limit_rad:
-                # Ambiguous by 2*pi: reported in any state (needs no sigma); new segment.
-                exc = Excursion(available, t_abs_start, t_abs_end, self.tb, innov,
-                                sig if sig is not None else float("nan"), self.cont, True, cands)
+            if abs(innov) > p.unwrap_limit_rad and not ready:
+                # No established track: a large jump is no evidence of a change
+                # (found on real public I/Q, where non-ready monitors otherwise
+                # raised thousands of "excursions" on noise). Restart acquisition
+                # silently with a new continuity segment.
+                self.requalify()
+                self.cont += 1
+                unwrapped = phase
+                state = "ACQUIRING"
+            elif abs(innov) > p.unwrap_limit_rad:
+                # Ambiguous by 2*pi on an established track; new segment.
+                exc = Excursion(available, t_abs_start, t_abs_end, self.tb, innov, sig, self.cont, True, cands)
                 self.cont += 1
                 unwrapped = phase
                 self.run, self.last_innov, self.pending_f = 0, None, 0.0
-                state = "TRACKING" if ready else ("ACQUIRING" if self.n_acq < p.acquisition_innovations
-                                                  else "WARMING")
-                floor = p.k_sigma * sig if ready else None
+                state, floor = "TRACKING", p.k_sigma * sig
             elif self.n_acq < p.acquisition_innovations:
                 # Innovations here are frequency error, not noise: never seed sigma or alarm.
                 unwrapped = un_prev + (pred - ph_prev) + innov

@@ -50,7 +50,9 @@ SELECTOR_PORTS = ("H", "R", "THRU", "TERM")
 CLOCK_REF = ("internal", "external_10mhz", "gpsdo")
 PPS_SOURCE = ("none", "external", "gpsdo")
 TIMEBASE_KINDS = ("sdr_device", "instrument", "controller")
-PROVENANCE_KINDS = ("synthetic", "bench_capture")
+# external_recording: third-party captures converted by an adapter. Neither
+# synthetic nor our own bench: they cannot support any Caelarch hardware claim.
+PROVENANCE_KINDS = ("synthetic", "bench_capture", "external_recording")
 
 # Event types an SDR host/scheduler legitimately knows online. Anything a
 # blind perturbation controller does is deliberately absent.
@@ -94,7 +96,8 @@ MANIFEST_FIELDS = {
 STREAM_FIELDS = {
     "stream_id": "id", "channel": "nat", "file": "file", "sha256": "hex64",
     "format": tuple(FORMATS), "sample_count": "pos_int", "sample_rate_hz": "pos",
-    "center_freq_hz": "pos", "rx_gain_db": "num", "timebase": "id", "t0_ns": "int",
+    "center_freq_hz": "pos", "rx_gain_db": "num?",  # null = unknown, never invented
+    "timebase": "id", "t0_ns": "int",
     "clip_level": "pos", "carries": "carries", "pilot": "pilot?", "monitor": "monitor?",
     "reference_tone": "reftone?",
 }
@@ -233,6 +236,9 @@ def validate_manifest(m):
         _fail("manifest", "this is a sealed-truth file; online ingestion must never open it")
     _check_obj("manifest", MANIFEST_FIELDS, m)
 
+    if m["clock"]["ref_source"] == "internal" and not m["clock"]["ref_locked_at_start"]:
+        _fail("manifest.clock", "an internal reference has no external lock to lose; "
+                                "ref_locked_at_start must be true")
     tb_ids = [tb["id"] for tb in m["timebases"]]
     if len(set(tb_ids)) != len(tb_ids):
         _fail("manifest.timebases", "duplicate timebase id")

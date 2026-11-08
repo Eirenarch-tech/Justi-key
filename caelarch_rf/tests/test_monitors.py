@@ -272,6 +272,13 @@ class TestPhaseWrapping(Base):
         self.assertEqual([o.window_start_ns for o in with_ramp], [o.window_start_ns for o in without])
         self.assertAlmostEqual(total(with_ramp) - total(without), 12.0, delta=0.3)
 
+    def test_no_excursion_without_an_established_track(self):
+        """Found on public I/Q: non-ready monitors flooded 'ambiguous' excursions on noise."""
+        r = extract_sampled_pilot(self.cap(self.sc(Disturbance("G", "ramp", 150_000, 40.0, 900_000))))
+        first_tracking = min(o.available_ns for o in r.observations if o.monitor_state == "TRACKING")
+        self.assertTrue(all(e.available_ns >= first_tracking for e in r.excursions))
+        self.assertGreater(len({o.continuity_id for o in r.observations if o.continuity_id is not None}), 1)
+
     def test_known_gap_restarts_unwrapping(self):
         cap = self.cap(self.sc(faults=[AcqFault("overflow_known", at_ns=6_000_000)]))
         r = extract_sampled_pilot(cap)

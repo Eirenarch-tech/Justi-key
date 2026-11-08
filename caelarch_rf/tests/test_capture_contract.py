@@ -263,6 +263,7 @@ class TestFailClosedTiming(Base):
 
     def test_reference_unlocked_at_start(self):
         m = synth.base_manifest()
+        m["clock"]["ref_source"] = "external_10mhz"   # an internal reference has no lock to lose
         m["clock"]["ref_locked_at_start"] = False
         ev = [{"seq": 0, "type": "REF_LOCK", "timebase": "sdr0", "t_ns": 3_000_000, "locked": True}]
         self.write(manifest=m, events=ev)

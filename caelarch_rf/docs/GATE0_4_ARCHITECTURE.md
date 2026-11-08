@@ -130,6 +130,7 @@ qualification-record verifier exists.
 | R15 | Scene transients splatter into the pilot band | A scene step 20 dB above the pilot distorts the pilot estimate of that block | Quantified in `sim/leakage.py`. Consider pilot level, block length and window choice in Sprint 1e |
 | R16 | Unintended leakage channels | The detector's scene leakage breaks some structural circuits | Any estimator that uses it must declare it. `leakage_breaks()` lists the affected circuits |
 | R17 | Slow drift invisible to step monitors | CONDITIONAL during gradual receiver drift | Proposed Sprint 1f. Until then, a CONDITIONAL from continuous monitors bounds steps, not drift |
+| R19 | Generator lacks real-hardware artefacts | Public recordings show DC/LO leakage up to 34 dB over the median bin, image rejection down to 27 dB, frequent clipping (median 5% of samples), 8-bit quantisation and bursts (`PUBLIC_IQ_CHECK.md`) | Add DC, IQ imbalance, quantisation, saturation and bursts to the generator; finer clip granularity |
 | R18 | False-alarm evidence limited by exposure | Zero false alarms in about 0.03 min bounds the rate only at about 110/min | Longer synthetic captures now. Long bench runs later |
 
 ## 5. Preliminary sprint breakdown

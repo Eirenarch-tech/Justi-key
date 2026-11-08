@@ -16,6 +16,9 @@ def report(cap) -> str:
     lines = [f"capture {cap.manifest['capture_id']}  provenance={cap.manifest['provenance']['kind']}"]
     if cap.synthetic:
         lines.append("  NOTE: synthetic capture - cannot support any hardware claim")
+    if cap.manifest["provenance"]["kind"] == "external_recording":
+        lines.append("  NOTE: third-party recording converted by an adapter - real I/Q, but not "
+                     "Caelarch hardware; cannot support any Caelarch claim")
     lines.append(f"  events={len(cap.events)} witness_records={len(cap.witness)} "
                  f"truth_commitment={'yes' if cap.manifest.get('truth_commitment') else 'NO (cannot score blind)'}")
     for sv in cap.streams.values():

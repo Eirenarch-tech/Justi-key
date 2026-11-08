@@ -55,12 +55,12 @@ therefore cannot sit next to the data "for convenience".
 | Field | Meaning |
 |---|---|
 | `capture_id`, `created_utc`, `graph_version` | Identity; graph version pins plane definitions in `GATE0_4_ARCHITECTURE.md` |
-| `provenance.kind` | `synthetic` or `bench_capture`. Synthetic captures cannot support hardware claims |
+| `provenance.kind` | `synthetic`, `bench_capture` or `external_recording` (third-party data converted by an adapter). Only `bench_capture` from qualified Caelarch hardware could ever support a hardware claim |
 | `device` | model, serial, driver/UHD version, `fpga_image_sha256` |
 | `clock` | `ref_source`, `pps_source`, `ref_locked_at_start` |
 | `timebases`, `timebase_alignments` | §2 |
 | `settling` | `switch_guard_ns`, `retune_guard_ns`, `gain_guard_ns`: minimum discard after each action |
-| `streams[]` | `stream_id`, `channel`, `file`, `sha256`, `format` (`sc16_le`/`fc32_le`, UHD interleaved), `sample_count`, `sample_rate_hz`, `center_freq_hz`, `rx_gain_db`, `timebase`, `t0_ns`, `clip_level`, `carries` ⊆ {scene, reference, pilot, analog_monitor}, `pilot` {offset_hz relative to the *initial* `center_freq_hz`; follow `LO_RETUNE` events, waveform_id}, `monitor` {kind `analog_quadrature`, reference `independent`/`pilot_source`, detector_bandwidth_hz, tap_plane `P4`}, `reference_tone` {offset_hz of the known RF source tone, relative to the initial `center_freq_hz`} (operating metadata that lets an online method measure the switched reference). A stream carries `analog_monitor` iff it has the `monitor` block, and then carries nothing else |
+| `streams[]` | `stream_id`, `channel`, `file`, `sha256`, `format` (`sc16_le`/`fc32_le`, UHD interleaved), `sample_count`, `sample_rate_hz`, `center_freq_hz`, `rx_gain_db` (null = unknown), `timebase`, `t0_ns`, `clip_level`, `carries` ⊆ {scene, reference, pilot, analog_monitor}, `pilot` {offset_hz relative to the *initial* `center_freq_hz`; follow `LO_RETUNE` events, waveform_id}, `monitor` {kind `analog_quadrature`, reference `independent`/`pilot_source`, detector_bandwidth_hz, tap_plane `P4`}, `reference_tone` {offset_hz of the known RF source tone, relative to the initial `center_freq_hz`} (operating metadata that lets an online method measure the switched reference). With `clock.ref_source = internal`, `ref_locked_at_start` must be true: there is no external lock to lose. A stream carries `analog_monitor` iff it has the `monitor` block, and then carries nothing else |
 | `events_file`/`events_sha256`, `witness_file`/`witness_sha256` | Sidecar files |
 | `qualification_ref` | {record_id, record_sha256} of a signed physical qualification record, or null. **Not verified by this package** |
 | `truth_commitment` | {scheme `sha256-salted-v1`, digest}, or null (null means the capture cannot be scored blind) |
